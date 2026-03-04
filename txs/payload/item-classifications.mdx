@@ -1,0 +1,121 @@
+---
+title: Item Classifications
+description: >-
+  8 campos de classificacao fiscal do item TXS — NCM, CEST, EAN, Ex-TIPI,
+  tipos de servico e NBS. Classe CL_TXS_ITEM_CLASSIFICATIONS_BR.
+---
+
+Referencia de debug para os campos da estrutura `TXS_ITEM_CLASSIFICATION`.
+Para cada campo do payload: metodo de debug, cenario (MM/SD/STO/Servico) e origem do dado.
+
+Classe: **CL_TXS_ITEM_CLASSIFICATIONS_BR**
+
+Todos os valores verificados contra codigo-fonte ABAP.
+
+---
+
+## ncm
+
+Nomenclatura Comum do Mercosul.
+
+**Material:**
+- Metodo: `GET_MATERIAL_NCM`
+- Origem: `MARC-STEUC`
+
+**STO:**
+- Metodo: `GET_MATERIAL_NCM_STO`
+- Origem: `MARC-STEUC` (planta recebedora)
+
+---
+
+## cest
+
+Codigo Especificador da Substituicao Tributaria.
+
+**Material:**
+- Metodo: `GET_MATERIAL_CEST`
+- Origem: `MARC-J_1BCEST`
+
+**STO:**
+- Metodo: `GET_MATERIAL_CEST_STO`
+- Origem: `MARC-J_1BCEST`
+
+---
+
+## ean
+
+Codigo de Barras.
+
+**Material:**
+- Metodo: `GET_MATERIAL_EAN`
+- Origem: `MARM-EAN11`
+
+**STO:**
+- Metodo: `GET_MATERIAL_EAN_STO`
+- Origem: `MARM-EAN11`
+
+---
+
+## exTipi
+
+Ex-TIPI (excecao da Tabela de Incidencia do IPI).
+
+**Material:**
+- Metodo: `GET_MATERIAL_EXTIPI`
+- Origem: `MARC-EXTIPI`
+
+**STO:**
+- Metodo: `GET_MATERIAL_EXTIPI_STO`
+- Origem: `MARC-EXTIPI`
+
+---
+
+## servTypeExec
+
+Tipo de Servico — Execucao (local onde o servico e executado).
+
+**MM:**
+- Metodo: `GET_MM_SERVICE_EXEC`
+- Origem: `J_1BSERVASSIGN2-SERVTYPE_IN` (jurisdiction do endereco de entrega)
+
+**SD:**
+- Metodo: `GET_SD_SERVICE_EXEC`
+- Origem: `J_1BSERVASSIGN2-SERVTYPE_OUT` (jurisdiction do cliente)
+
+---
+
+## servTypeFed
+
+Tipo de Servico — Federal / Codigo ABRASF / LC 116.
+
+**MM:**
+- Metodo: `GET_MM_SERVICE_FEDERAL`
+- Origem: `CL_LOGBR_ABRASF_DET`, fallback `J_1BSERVTYPES1-ABRASF`
+
+**SD:**
+- Metodo: `GET_SD_SERVICE_FEDERAL`
+- Origem: `CL_LOGBR_ABRASF_DET`, fallback `J_1BSERVTYPES2-CLISTSERV`
+
+---
+
+## servTypeFrom
+
+Tipo de Servico — Origem (local de onde o servico se origina).
+
+**MM:**
+- Metodo: `GET_MM_SERVICE_FROM`
+- Origem: `J_1BSERVASSIGN2-SERVTYPE_IN` (jurisdiction do fornecedor)
+
+**SD:**
+- Metodo: `GET_SD_SERVICE_FROM`
+- Origem: `J_1BSERVASSIGN2-SERVTYPE_OUT` (jurisdiction do plant)
+
+---
+
+## nbs
+
+Nomenclatura Brasileira de Servicos.
+
+**MM/SD:**
+- Metodo: `GET_NBS`
+- Origem: `LOGBR_NBS_READER_DA->READ_NBS_BY_MATERIAL`

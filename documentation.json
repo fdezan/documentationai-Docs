@@ -24,88 +24,11 @@
         "icon": "calculator",
         "groups": [
           {
-            "group": "Visao Geral",
-            "icon": "layout",
-            "pages": [
-              { "title": "O que e o TXS", "path": "txs/overview", "icon": "info" },
-              { "title": "Arquitetura — 8 Fases", "path": "txs/arquitetura", "icon": "git-branch" }
-            ]
-          },
-          {
             "group": "Payload Reference",
             "icon": "file-text",
             "pages": [
-              { "title": "Header", "path": "txs/payload/header" },
-              { "title": "Items e Classificacoes", "path": "txs/payload/items" },
-              { "title": "Locations (Enderecos)", "path": "txs/payload/locations" },
-              { "title": "Parties (Parceiros)", "path": "txs/payload/parties" },
-              { "title": "Extensibilidade", "path": "txs/payload/extensions" },
-              { "title": "Response (Resposta)", "path": "txs/payload/response" },
-              { "title": "Condition Mapping", "path": "txs/payload/condition-mapping" },
-              { "title": "Debug Points", "path": "txs/payload/debug-points" },
-              { "title": "Campos — Origem e Debug", "path": "txs/payload/campo-origem-debug" },
-              { "title": "Item Debug Fields", "path": "txs/payload/item-debug-fields" }
-            ]
-          },
-          {
-            "group": "Pipeline (por Fase)",
-            "icon": "arrow-right",
-            "pages": [
-              { "title": "Fases 1-3: Request", "path": "txs/pipeline/request" },
-              { "title": "Fase 4: Comunicacao HTTP", "path": "txs/pipeline/comunicacao" },
-              { "title": "Fases 5-6: Response", "path": "txs/pipeline/response" },
-              { "title": "Fases 7-8: Pos-Processamento", "path": "txs/pipeline/pos-processamento" }
-            ]
-          },
-          {
-            "group": "Referencia Tecnica",
-            "icon": "book",
-            "pages": [
-              { "title": "Troubleshooting (10 Cenarios)", "path": "txs/reference/troubleshooting" },
-              { "title": "Field Mapping (78+ Campos)", "path": "txs/reference/field-mapping" },
-              { "title": "Guia de BAdIs e Extensibilidade", "path": "txs/reference/badi-extension-guide" },
-              { "title": "Constantes Verificadas", "path": "txs/reference/verified-constants" },
-              { "title": "Cheat Sheet: Conditions", "path": "txs/reference/cheatsheet-conditions" },
-              { "title": "Cheat Sheet: Config", "path": "txs/reference/cheatsheet-config" },
-              { "title": "Cheat Sheet: Debug", "path": "txs/reference/cheatsheet-debug" },
-              { "title": "Plano de Treinamento", "path": "txs/reference/training-plan" }
-            ]
-          },
-          {
-            "group": "Treinamento TXS",
-            "icon": "graduation-cap",
-            "pages": [
-              { "title": "Dia 1: Arquitetura", "path": "txs/treinamento/dia1-arquitetura" },
-              { "title": "Dia 2: Dados Mestres", "path": "txs/treinamento/dia2-dados-mestres" },
-              { "title": "Dia 3: Configuracao", "path": "txs/treinamento/dia3-configuracao" },
-              { "title": "Dia 4: Troubleshooting", "path": "txs/treinamento/dia4-troubleshooting" },
-              { "title": "Referencia Rapida", "path": "txs/treinamento/referencia-rapida" },
-              { "title": "Referencia Tecnica", "path": "txs/treinamento/referencia-tecnica" },
-              { "title": "Resumo Aula 01", "path": "txs/treinamento/resumo-aula01" },
-              { "title": "A Morte dos IVAs", "path": "txs/treinamento/morte-dos-ivas" }
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "S/4HANA Cloud",
-        "icon": "cloud",
-        "groups": [
-          {
-            "group": "Fundamentos",
-            "icon": "layers",
-            "pages": [
-              { "title": "RAP — Programming Model", "path": "s4hana/rap-model" },
-              { "title": "ABAP Cloud Guidelines", "path": "s4hana/abap-cloud" },
-              { "title": "Key User Extensibility", "path": "s4hana/key-user-extensibility" }
-            ]
-          },
-          {
-            "group": "Localizacao Brasil",
-            "icon": "flag",
-            "pages": [
-              { "title": "Nota Fiscal Eletronica", "path": "s4hana/nota-fiscal" },
-              { "title": "Tax Determination", "path": "s4hana/tax-determination" }
+              { "title": "Item Classifications", "path": "txs/payload/item-classifications" },
+              { "title": "Additional Item Info", "path": "txs/payload/additional-item-info" }
             ]
           }
         ]

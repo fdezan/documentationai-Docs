@@ -1,67 +1,23 @@
 ---
 title: LOCBR Knowledge Base
 description: >-
-  Base tecnica de Localizacao Brasil para SAP S/4HANA Cloud — Tax Service, Nota
-  Fiscal, ABAP Cloudi
+  Base tecnica de Localizacao Brasil para SAP S/4HANA Cloud — Tax Service (TXS)
 ---
+
 Base de conhecimento tecnico de **Localizacao Brasil (LOCBR)** no SAP S/4HANA Cloud.
-Elaborada por Fabio Dezan.
 
 ---
 
-## O que voce encontra aqui
+## Payload Reference — Item
 
-<Columns cols="3">
-  <Card title="Tax Service (TXS)" href="/txs/overview" icon="calculator" horizontal="false">
-    Motor de calculo externo para impostos brasileiros — arquitetura de 8 fases, payload, response, troubleshooting e extensibilidade.
-  </Card>
-
-  <Card title="Treinamento TXS" href="/txs/treinamento/dia1-arquitetura" icon="graduation-cap" horizontal="false">
-    Handouts de treinamento de 4 dias cobrindo arquitetura, dados mestres, configuracao e debug.
-  </Card>
-
-  <Card title="S/4HANA Cloud" href="/s4hana/rap-model" icon="cloud" horizontal="false">
-    RAP, ABAP Cloud, Clean Core, Key User Extensibility e fundamentos de Nota Fiscal.
-  </Card>
-</Columns>
-
----
-
-## Conteudo Principal
+Referencia de debug para os campos do payload TXS no nivel de item, organizados por classe, campo, metodo e origem do dado.
 
 <Columns cols="2">
-  <Card title="Payload Reference" href="/txs/payload/header" icon="file-text" horizontal="false">
-    Referencia completa de cada estrutura do payload TXS com origem dos dados e breakpoints ADT.
+  <Card title="Item Classifications" href="/txs/payload/item-classifications" icon="tag" horizontal="false">
+    8 campos — NCM, CEST, EAN, Ex-TIPI, tipos de servico, NBS. Classe CL_TXS_ITEM_CLASSIFICATIONS_BR.
   </Card>
 
-  <Card title="Pipeline por Fase" href="/txs/pipeline/request" icon="arrow-right" horizontal="false">
-    Fluxo de execucao do TXS documentado fase a fase: request, comunicacao HTTP, response e pos-processamento.
-  </Card>
-
-  <Card title="Troubleshooting" href="/txs/reference/troubleshooting" icon="alert-triangle" horizontal="false">
-    10 cenarios de problema com classes, metodos, variaveis e solucoes tipicas.
-  </Card>
-
-  <Card title="Cheat Sheets" href="/txs/reference/cheatsheet-conditions" icon="clipboard" horizontal="false">
-    Condition types, tabelas de configuracao e classes de debug em formato de consulta rapida.
+  <Card title="Additional Item Info" href="/txs/payload/additional-item-info" icon="info" horizontal="false">
+    16 campos — origem do material, usage, usage purpose, CPRB, subcontratacao, labor contract. Classe CL_TXS_ADDITIONAL_ITEM_INFO_BR.
   </Card>
 </Columns>
-
----
-
-## Sobre esta base
-
-Esta documentacao foi construida a partir de:
-
-- **Codigo-fonte ABAP** baixado via SAP ADT REST API e catalogado (234+ artefatos TXS)
-
-- **Treinamento presencial** de 4 dias sobre Tax Service
-
-- **Analise tecnica** de classes, interfaces e estruturas do pipeline TXS
-
-- **Verificacao contra codigo-fonte** — todos os valores tecnicos (condition types, constantes, nomes de tabelas) foram validados contra o codigo real
-
-<Callout kind="info" collapsed="false">
-  Todos os valores tecnicos desta base foram verificados contra o codigo-fonte ABAP. Quando um valor nao pode ser confirmado, ele e marcado com aviso explicito.
-</Callout>
-
