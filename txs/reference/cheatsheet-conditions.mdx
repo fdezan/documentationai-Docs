@@ -1,0 +1,138 @@
+---
+title: "Cheat Sheet — Condition Types TXS"
+description: "Material de apoio para treinamento TXS/TACS. Imprimir em 1 pagina."
+---
+
+<Callout kind="tip">
+Material de apoio para treinamento TXS/TACS. Imprimir em 1 pagina.
+Fonte: `if_txs_constants.abap`, `if_logbr_ft_txs_constants.abap`, `if_txs_constants_br.abap`
+</Callout>
+
+
+## Service Call — A Condition que Dispara o HTTP
+
+| Condition Type | Internal Code | Papel | Fonte |
+|:-:|---|---|---|
+| **TXSC** | CALCULATE_TAX | **Dispara chamada HTTP** ao Tax Engine. Armazena response no buffer singleton. | `if_txs_constants.abap:146` |
+
+<Callout kind="info">
+**TXSC deve ser a primeira** condition type TXS na pricing procedure (menor sequencia).
+As demais conditions **leem do buffer** — sem HTTP adicional.
+</Callout>
+
+
+## Condition Types por Imposto
+
+Diferente de "1 condition por imposto", o TXS usa **multiplas condition types por imposto**, cada uma com um papel (rate, value, base, reducao, etc.). O mapeamento e configurado na tabela **J_1BTXCOND** (internal_code → condition_type KSCHL).
+
+### ICMS — 7 condition types
+
+| KSCHL | Constante | Papel tipico | Fonte (linha) |
+|:-----:|-----------|-------------|---------------|
+| **BX16** | bx16 | Condition principal ICMS | `:93` |
+| **ICM1** | ICM1 | ICMS tipo 1 | `:94` |
+| **ICM2** | ICM2 | ICMS tipo 2 | `:95` |
+| **BX10** | BX10 | ICMS complementar | `:96` |
+| **BX11** | BX11 | ICMS complementar | `:97` |
+| **BX12** | BX12 | ICMS complementar | `:98` |
+| **BIC1** | BIC1 | ICMS complementar | `:99` |
+
+### IPI — 8 condition types
+
+| KSCHL | Constante | Papel tipico | Fonte (linha) |
+|:-----:|-----------|-------------|---------------|
+| **BIP0** | BIP0 | Condition principal IPI | `:101` |
+| **IPI1** | IPI1 | IPI tipo 1 | `:102` |
+| **IPI2** | IPI2 | IPI tipo 2 | `:103` |
+| **BX20** | BX20 | IPI complementar | `:104` |
+| **BX21** | BX21 | IPI complementar | `:105` |
+| **BX22** | BX22 | IPI complementar | `:106` |
+| **BXPA** | BXPA | IPI pauta | `:107` |
+| **BIP1** | BIP1 | IPI complementar | `:108` |
+
+### PIS — 7 condition types
+
+| KSCHL | Constante | Papel tipico | Fonte (linha) |
+|:-----:|-----------|-------------|---------------|
+| **BPI1** | BPI1 | Condition principal PIS | `:110` |
+| **IPIS** | IPIS | PIS padrao | `:111` |
+| **IPSN** | IPSN | PIS Simples Nacional | `:112` |
+| **BX80** | BX80 | PIS complementar | `:113` |
+| **BX81** | BX81 | PIS complementar | `:114` |
+| **BX82** | BX82 | PIS complementar | `:115` |
+| **BPIP** | BPIP | PIS complementar | `:116` |
+
+### COFINS — 7 condition types
+
+| KSCHL | Constante | Papel tipico | Fonte (linha) |
+|:-----:|-----------|-------------|---------------|
+| **BCO1** | BCO1 | Condition principal COFINS | `:118` |
+| **ICOF** | ICOF | COFINS padrao | `:119` |
+| **ICON** | ICON | COFINS Simples Nacional | `:120` |
+| **BX70** | BX70 | COFINS complementar | `:121` |
+| **BX71** | BX71 | COFINS complementar | `:122` |
+| **BX72** | BX72 | COFINS complementar | `:123` |
+| **BCOP** | BCOP | COFINS complementar | `:124` |
+
+### II (Imposto de Importacao) — 5 condition types
+
+| KSCHL | Constante | Papel tipico | Fonte (linha) |
+|:-----:|-----------|-------------|---------------|
+| **BXIR** | BXIR | Condition principal II | `:126` |
+| **II01** | II01 | II tipo 1 | `:127` |
+| **BASB** | BASB | II base | `:128` |
+| **BXIE** | BXIE | II complementar | `:129` |
+| **BXII** | BXII | II complementar | `:130` |
+
+### Retencao na Fonte (WHT) — condition types adicionais
+
+| KSCHL | Imposto | Papel | Fonte (linha) |
+|:-----:|---------|-------|---------------|
+| **BW61** | IRRF | WHT collection code invoice | `if_txs_constants_br.abap:110` |
+| **BX9U** | IRRF | Base | `:111` |
+| **BX9V** | IRRF | Aliquota | `:112` |
+| **BW71** | INSS | WHT collection code invoice | `:113` |
+| **BX9R** | INSS | Aliquota | `:114` |
+| **BX9S** | INSS | Base | `:115` |
+| **BXRF** | ICMS ZF | Zona Franca rate | `:116` |
+| **BXBF** | ICMS ZF | Zona Franca base | `:117` |
+| **CPIS** | PIS | Fornecedor | `:118` |
+| **CCOS** | COFINS | Fornecedor | `:119` |
+| **BPI8** | PIS | Pauta amount | `:108` |
+| **BCO8** | COFINS | Pauta amount | `:109` |
+
+## Regras Criticas
+
+1. **Todas** as condition types TXS usam **Formula 279** (requirement formula BR)
+2. **TXSC deve ser a primeira** condition type TXS na pricing procedure (menor sequencia)
+3. TXSC e a **unica** que dispara a chamada HTTP ao Tax Engine
+4. As demais conditions **leem do Response Buffer** (singleton) — sem HTTP adicional
+5. O mapeamento condition_type ↔ campo KOMV e feito pela tabela **J_1BNFTXCOND**
+6. O mapeamento internal_code → condition_type (KSCHL) e feito pela tabela **J_1BTXCOND**
+7. Se TXSC nao executar, todas as demais conditions falham (`CX_TXS_RESPONSE_NOT_ON_BUFFER`)
+
+## Mapeamento — Campos J_1BNFTXCOND → KOMV
+
+Cada condition type mapeia para um campo diferente da KOMV, conforme o campo na J_1BNFTXCOND:
+
+| Campo J_1BNFTXCOND | Metodo do Mapper | Campo KOMV | Fonte |
+|---|---|---|---|
+| rate | MAP_COND_RATE | KWERT, KBETR = rate × 10 | `cl_txs_conditions_mapper_br.abap:460` |
+| value | MAP_COND_AMOUNT | KWERT, KBETR, KAWRT | `:462` |
+| base | MAP_COND_BASE | KWERT = taxable | `:464` |
+| basered1 | MAP_COND_BASE_REDUCTION_RATE | KWERT, KBETR | `:466` |
+| excbas | MAP_COND_EXCLUDED_BASE | KWERT = exempted_base_amount | `:468` |
+| othbas | MAP_COND_OTHER_BASE | KWERT = other_base_amount | `:470` |
+| whtcollcode | MAP_COND_WHT_COLLECTION_CODE | KNUMA_BO | `:472` |
+| srate | MAP_COND_ST_SURCHARGE_RATE | KWERT, KBETR | `:474` |
+| qrate | MAP_COND_PAUTA_RATE | KWERT, KMEIN, KPEIN | `:476` |
+| qbase | MAP_COND_PAUTA_BASE | KWERT = pauta × 10 | `:482` |
+| *(sem match)* | — | KINAK = 'X' | Condition inativada |
+
+### Classe responsavel pelo mapeamento
+
+`CL_TXS_CONDITIONS_MAPPER_BR::MAP_TAX_TYPE_TO_CONDITION`
+
+### Tax code (MWSKZ)
+
+O tax code retornado pelo Engine (`tax_line.taxcode`) e convertido para o tax code SAP (MWSKZ) via tabela `TXS_TAX_CODE_MAP` (classe `CL_TXS_TAX_CODE_DAO`). Variante customizing `TXS_TAX_CODE_MAP_C` tem prioridade.

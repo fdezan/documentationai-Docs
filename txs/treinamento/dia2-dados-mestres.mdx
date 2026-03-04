@@ -1,0 +1,261 @@
+---
+title: "Handout Dia 2 — Payload e Dados Mestres"
+description: "Handout Dia 2 — Payload e Dados Mestres"
+---
+
+## Treinamento: Tax Service — Motor de Calculo Externo (Sovos)
+**Publico**: Consultores SAP MM/SD Pleno/Senior
+
+---
+
+## 1. Anatomia do Payload — Header
+
+O TXS monta um **JSON** com todos os dados necessarios para o Sovos calcular os impostos. Tudo comeca pelo header:
+
+| Campo Payload | Campo SAP | Tabela/Estrutura | Onde Configurar | Notas |
+|--------------|-----------|-----------------|-----------------|-------|
+| `id` | UUID gerado | — | Automatico | Identificador unico da chamada |
+| `date` | SY-DATUM | — | Automatico | Data UTC no formato ISO 8601 |
+| `company_id` | KOMK-BUKRS | T001 | Empresa no documento | Codigo da empresa |
+| `sale_or_purchase` | KAPPL | — | Automatico | TX=Compra, V=Venda |
+| `currency` | KOMK-WAERK | — | Moeda do documento | ISO 4217 (BRL) |
+| `operation_nature_code` | CFOP | LFD/KOMP | Determinacao fiscal | Ex: 5102, 1102 |
+| `gross_or_net` | Interno | — | Automatico | Bruto ou liquido |
+| `business_partner_id` | LIFNR/KUNNR | LFA1/KNA1 | Mestre do BP | Fornecedor ou cliente |
+
+---
+
+## 2. Anatomia do Payload — Itens
+
+| Campo Payload | Campo SAP | Tabela | Onde Verificar | Notas |
+|--------------|-----------|--------|----------------|-------|
+| `item_code` | KOMP-KPOSN | — | Item do documento | Numero do item |
+| `quantity` | Pricing context | — | Quantidade | Quantidade tributavel |
+| `unit_price` | KWERT/quantity | — | Condicao de preco base | Diferente para MM vs SD |
+| `tax_code` | KOMP-MWSKZ | — | Tax code do item | Ex: I1, I2, J1 |
+| `shipping_cost` | Flag interno | — | Automatico | Indica se e frete |
+
+### Unit Price: MM vs SD
+
+- **MM**: `GET_UNIT_PRICE_MM()` — valor da condicao base / quantidade
+- **SD**: `GET_UNIT_PRICE_SD()` — metodo diferente, considera net price
+
+---
+
+## 3. Classificacoes de Material (item_classifications[])
+
+O payload envia classificacoes fiscais do material como um array. Cada classificacao tem um `type` e um `isc_code`:
+
+| Classificacao | Type | Origem SAP | Tabela | App Fiori / Transacao | Formato |
+|--------------|------|-----------|--------|----------------------|---------|
+| **NCM** | NCM | KOMP-STEUC | MARC-STEUC | MM01 → Comercio Exterior | 8 digitos sem pontos (ex: 84719012) |
+| **EXTIPI** | EXTIPI | Ultimos 2-3 digitos do NCM | KOMP-STEUC | — (derivado do NCM) | 2-3 caracteres |
+| **CEST** | CEST | Lookup por NCM | Tabela CEST (DAO) | Manter tabela CEST | 7 digitos |
+| **EAN** | EAN | KOMP-EAN11 | MARA-EAN11 | MM01 → Dados Adicionais | Codigo de barras |
+| **NBS** | NBS | logbr_nbs_reader | Tabela NBS | Manter NBS | Nomenclatura Brasileira de Servicos |
+| **Service Type** | Varies | Lookup por MATNR | Tabela de servicos | — | Tipo de servico fiscal |
+
+### Atencao ao NCM!
+
+O SAP armazena o NCM com pontos (ex: `8471.90.12`), mas o TXS envia **sem pontos** (`84719012`).
+A classe `CL_TXS_MATERIAL_INFO_FORMATTER::FORMAT_NCM()` faz a formatacao.
+
+**Problemas comuns:**
+- MARC-STEUC vazio → NCM vai vazio no payload → Sovos nao calcula
+- NCM com menos de 8 digitos → formatacao incorreta
+- STO: o centro de **origem** precisa ter STEUC preenchido tambem
+
+---
+
+## 4. Informacoes Adicionais do Item (additional_item_information[])
+
+| Info | Origem SAP | Tabela | Notas |
+|------|-----------|--------|-------|
+| **CFOP** | LFD/KOMP-CFOP | Determinacao fiscal | Codigo Fiscal de Operacoes e Prestacoes |
+| **Material Origin** | KOMP-MTORG / EKPO-J_1BMATORG | J_1BMATORG | Nacional (0-4) ou Importado (5-8) |
+| **Usage** | KOMP-MATUSE | Determinacao | Material Usage (ex: industrializacao, revenda) |
+| **Free Goods** | Flag | — | Indicador de mercadoria bonificada |
+| **Free Charge** | Flag | — | Indicador de item sem cobranca |
+
+---
+
+## 5. Informacoes de Custo (cost_information)
+
+| Campo | Descricao | Origem |
+|-------|-----------|--------|
+| `freight` | Valor do frete | Condicao de frete no pricing |
+| `insurance` | Valor do seguro | Condicao de seguro no pricing |
+| `discount` | Valor do desconto | Condicoes de desconto |
+| `other_expenses` | Outras despesas | Outras condicoes |
+
+---
+
+## 6. Localizacoes (locations[])
+
+### MM — Compras
+
+| Localizacao | Papel | Origem | Tabela | Campos-Chave |
+|------------|-------|--------|--------|-------------|
+| **ship_from** | Fornecedor | Endereco do fornecedor | LFA1 | REGIO (UF), PSTLZ (CEP), ORT01 (cidade), LAND1 (pais) |
+| **ship_to** | Centro receptor | Endereco do centro | T001W | REGIO (UF), PSTLZ (CEP), ORT01 (cidade), LAND1 (pais) |
+
+### SD — Vendas
+
+| Localizacao | Papel | Origem | Tabela | Campos-Chave |
+|------------|-------|--------|--------|-------------|
+| **ship_from** | Centro expedidor | Endereco do centro | T001W | REGIO (UF), PSTLZ (CEP), ORT01 (cidade) |
+| **ship_to** | Cliente | Endereco do cliente | KNA1 | REGIO (UF), PSTLZ (CEP), ORT01 (cidade) |
+
+### STO — Transferencia entre Centros
+
+| Localizacao | Papel | Origem | Tabela |
+|------------|-------|--------|--------|
+| **ship_from** | Centro origem | Plant data | T001W (centro de origem) |
+| **ship_to** | Centro destino | Plant data | T001W (centro de destino) |
+
+### Frete (3 localizacoes)
+
+| Localizacao | Papel | Origem |
+|------------|-------|--------|
+| **freight-contract_from** | Transportadora | Endereco do carrier |
+| **freight-ship_from** | Origem da mercadoria | Endereco do fornecedor/centro |
+| **freight-ship_to** | Destino da entrega | Endereco do recebedor |
+
+### Campo Critico: UF (REGIO)
+
+A UF determina se a operacao e **interestadual** ou **interna**, o que impacta diretamente:
+- Aliquota de ICMS (ex: 18% interna SP, 12% interestadual SP→MG)
+- ICMS-DIFAL (diferencial de aliquota)
+- Substituicao Tributaria
+
+---
+
+## 7. Parties — Parceiros de Negocio (party[])
+
+### Registros Fiscais
+
+| Registro | Campo SAP | Tabela | Onde Verificar | Impacto no Calculo |
+|----------|-----------|--------|----------------|-------------------|
+| **CNPJ** | STCD1 | LFA1/KNA1 | BP → Identificacao Fiscal | Identifica empresa para o Sovos |
+| **CPF** | STCD2 | LFA1 | BP → Identificacao Fiscal | Pessoa fisica |
+| **IE** (Inscricao Estadual) | STCD3 | LFA1/KNA1/J_1BBRANCH | BP → Identificacao Fiscal + Branch | Determina contribuinte ICMS |
+| **IM** (Inscricao Municipal) | STCD4 | J_1BBRANCH | Branch Data | Determina contribuinte ISS |
+| **IBGE** | TXJCD | LFA1/SADR | Endereco → Jurisdicao | Codigo do municipio IBGE |
+| **SUFRAMA** | SUFRAMA | DAO SUFRAMA | Cadastro SUFRAMA | Zona Franca de Manaus |
+
+### CNAE — Classificacao Nacional de Atividades Economicas
+
+O CNAE e um dos campos mais complexos. Ha **8 metodos de determinacao**:
+
+| Cenario | Metodo | Fonte Primaria | Fallback |
+|---------|--------|---------------|----------|
+| MM + BP + Material | `CNAE_FOR_MM_BP_MAT` | BRF+ (vendor+org+plant+matkl+ncm) | LFA1-CNAE |
+| MM + Plant + Material | `CNAE_FOR_MM_PLANT_MAT` | BRF+ (plant+org+matkl+ncm) | J_1BBRANCH-CNAE |
+| MM + BP + Servico | `CNAE_FOR_MM_BP_SERV` | BRF+ (vendor+org+plant+abrasf) | LFA1-CNAE |
+| MM + Plant + Servico | `CNAE_FOR_MM_PLANT_SERV` | BRF+ (plant+org+abrasf) | J_1BBRANCH-CNAE |
+| SD + BP + Material | `CNAE_FOR_SD_BP_MAT` | BRF+ (customer+vkorg+vtweg+matkl+ncm) | KNA1-CNAE (OTC) |
+| SD + Plant + Material | `CNAE_FOR_SD_PLANT_MAT` | BRF+ (plant+vkorg+matkl+ncm) | J_1BBRANCH-CNAE |
+| SD + BP + Servico | `CNAE_FOR_SD_BP_SERV` | BRF+ (customer+vkorg+vtweg+abrasf) | KNA1-CNAE (OTC) |
+| SD + Plant + Servico | `CNAE_FOR_SD_PLANT_SERV` | BRF+ (plant+vkorg+abrasf) | J_1BBRANCH-CNAE |
+
+**Logica**: Sempre tenta BRF+ primeiro → se vazio → fallback para CNAE do BP/Branch
+
+### Status de Contribuinte (7 tipos)
+
+| Contribuinte | Campo | Tabela | Valores |
+|-------------|-------|--------|---------|
+| ICMS | J_1BBRANCH-ICMSCONTRIBUTOR | J_1BBRANCH | X=Contribuinte, ' '=Nao |
+| ICMS-ST | J_1BBRANCH-ICMSSTCONTRIBUTOR | J_1BBRANCH | X=Contribuinte, ' '=Nao |
+| IPI | J_1BBRANCH-IPICONTRIBUTOR | J_1BBRANCH | X=Contribuinte, ' '=Nao |
+| PIS | J_1BBRANCH-PISCONTRIBUTOR | J_1BBRANCH | X=Contribuinte, ' '=Nao |
+| COFINS | J_1BBRANCH-COFINSCONTRIBUTOR | J_1BBRANCH | X=Contribuinte, ' '=Nao |
+| ISS | J_1BBRANCH-ISSCONTRIBUTOR | J_1BBRANCH | X=Contribuinte, ' '=Nao |
+| CBS | J_1BBRANCH-CBSCONTRIBUTOR | J_1BBRANCH | X=Contribuinte, ' '=Nao |
+
+---
+
+## 8. Payload V2 — Campos Extras (SD)
+
+No payload V2 (usado em SD), existem campos adicionais:
+
+- **extensions[]**: Campos customizados YY1_* do header
+- **item_extensions[]**: Campos customizados YY1_* do item
+- **Party por item**: Cada item pode ter parties diferentes (ship-to diferente por item)
+
+Exemplo de extensions no JSON:
+```json
+{
+  "extensions": [
+    { "customField": "YY1_SPECIAL_TAX_FLAG", "customFieldValue": "X" }
+  ],
+  "items": [{
+    "itemExtensions": [
+      { "customField": "YY1_MATERIAL_GROUP_2", "customFieldValue": "MINING" }
+    ]
+  }]
+}
+```
+
+---
+
+## 9. Exercicio: Rastreie o Campo
+
+Para cada campo abaixo, identifique: **Dado Mestre → Tabela SAP → Transacao/App Fiori → Impacto no calculo**
+
+| # | Campo no Payload | Dado Mestre | Tabela | Transacao/App | Impacto |
+|---|-----------------|-------------|--------|---------------|---------|
+| 1 | NCM = "84719012" | ? | ? | ? | ? |
+| 2 | IE = "123456789" | ? | ? | ? | ? |
+| 3 | CNAE = "4651601" | ? | ? | ? | ? |
+| 4 | ship_from.state = "SP" | ? | ? | ? | ? |
+| 5 | material_origin = "0" | ? | ? | ? | ? |
+
+### Respostas
+
+| # | Dado Mestre | Tabela | Transacao/App | Impacto |
+|---|-------------|--------|---------------|---------|
+| 1 | Classificacao Fiscal do Material | MARC-STEUC | MM01 → Comercio Exterior ou Manage Product Master Data | NCM errado = imposto errado |
+| 2 | Inscricao Estadual do BP | LFA1-STCD3 / KNA1-STCD3 | BP → Identificacao Fiscal | IE errado = contribuinte ICMS errado |
+| 3 | CNAE do BP ou Branch | BRF+ ou LFA1-CNAE / J_1BBRANCH | BRF+ Workbench ou BP Master | CNAE errado = ISS/atividade errada |
+| 4 | UF do Fornecedor | LFA1-REGIO | BP → Endereco | UF errada = aliquota interestadual errada |
+| 5 | Origem do Material | KOMP-MTORG / J_1BMATORG | MM01 → Dados LOCBR | Origem errada = CST/NCM errado |
+
+---
+
+## 10. Checklist de Dados Mestres — Pre-Go-Live
+
+### Material Master
+
+- [ ] **NCM** (MARC-STEUC) preenchido com 8 digitos em todos os centros relevantes
+- [ ] **CEST** configurado na tabela de CEST para o NCM correspondente
+- [ ] **EAN** (MARA-EAN11) preenchido se necessario para NF-e
+- [ ] **Material Origin** (J_1BMATORG) correto: 0=Nacional, 1-4=Nacional com componente importado, 5-8=Importado
+- [ ] **Material Usage** (MATUSE) correto para o cenario fiscal
+- [ ] Para servicos: **NBS** e **Service Type** configurados
+
+### Business Partner (Fornecedor / Cliente)
+
+- [ ] **CNPJ** (STCD1) valido e formatado corretamente
+- [ ] **CPF** (STCD2) para pessoa fisica, se aplicavel
+- [ ] **IE** (STCD3) preenchido — se isento, usar "ISENTO"
+- [ ] **IM** (STCD4) para prestadores de servico municipal
+- [ ] **CNAE** no BP ou regra BRF+ configurada
+- [ ] **Endereco completo**: UF (REGIO), CEP, cidade, rua
+
+### Branch Data (J_1BBRANCH)
+
+- [ ] **CNPJ da filial** preenchido
+- [ ] **IE da filial** preenchido
+- [ ] **CNAE da filial** preenchido (fallback se BRF+ nao retornar)
+- [ ] **Status de contribuinte**: ICMS, IPI, PIS, COFINS, ISS — todos corretos
+- [ ] **IBGE code** do municipio
+
+### Centro (Plant)
+
+- [ ] **Endereco completo**: UF (REGIO), CEP (PSTLZ), cidade (ORT01)
+- [ ] **Branch atribuido** ao centro
+- [ ] Para STO: ambos os centros (origem e destino) com endereco completo
+
+---
+
+*Material de apoio — Treinamento Tax Service (TXS) com Sovos*

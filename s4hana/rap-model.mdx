@@ -1,0 +1,274 @@
+---
+title: "RAP - RESTful ABAP Programming Model"
+description: "RAP - RESTful ABAP Programming Model"
+---
+
+## Visao Geral
+
+O RAP e o modelo de programacao padrao para S/4HANA Cloud. Define como construir aplicacoes Fiori transacionais e analiticas.
+
+## Stack RAP Completo
+
+```
+┌─────────────────────────────┐
+│      Fiori Elements UI      │  ← App Fiori (gerada ou custom)
+├─────────────────────────────┤
+│      Service Binding        │  ← Protocolo (OData V2/V4)
+├─────────────────────────────┤
+│      Service Definition     │  ← Quais entidades expor
+├─────────────────────────────┤
+│    CDS Projection View      │  ← Cenario especifico (UI, API, Analytics)
+├─────────────────────────────┤
+│   Behavior Definition       │  ← Operacoes (CRUD, actions, validations)
+│   Behavior Implementation   │  ← Logica ABAP
+├─────────────────────────────┤
+│    CDS Interface View       │  ← Data Model (entidades, associacoes)
+├─────────────────────────────┤
+│     Database Tables         │  ← Persistencia
+└─────────────────────────────┘
+```
+
+## 1. CDS Interface View (Data Model)
+
+Define a estrutura de dados e relacionamentos.
+
+```cds
+@AccessControl.authorizationCheck: #CHECK
+@EndUserText.label: 'Purchase Order Item'
+define root view entity ZR_PurchaseOrderItem
+  as select from zpurchorderitem
+  composition [0..*] of ZR_POScheduleLine as _ScheduleLine
+  association [1..1] to ZR_PurchaseOrder as _PurchaseOrder
+    on $projection.PurchaseOrder = _PurchaseOrder.PurchaseOrder
+{
+  key purchase_order      as PurchaseOrder,
+  key purchase_order_item as PurchaseOrderItem,
+      material            as Material,
+      quantity            as OrderQuantity,
+      net_price           as NetPrice,
+      currency            as Currency,
+      _ScheduleLine,
+      _PurchaseOrder
+}
+```
+
+### Tipos de CDS View
+- **Root View Entity**: Entidade raiz do BO (define composicao)
+- **Child View Entity**: Entidades filhas (composicao)
+- **Abstract Entity**: Para parametros de actions
+- **Custom Entity**: Para dados de fontes externas (APIs, RFC)
+
+## 2. CDS Projection View
+
+Exposicao especifica por cenario.
+
+```cds
+@EndUserText.label: 'PO Item - Transactional'
+@AccessControl.authorizationCheck: #CHECK
+@Metadata.allowExtensions: true
+define root view entity ZC_PurchaseOrderItem
+  provider contract transactional_query
+  as projection on ZR_PurchaseOrderItem
+{
+  key PurchaseOrder,
+  key PurchaseOrderItem,
+      Material,
+      OrderQuantity,
+      NetPrice,
+      Currency,
+      _ScheduleLine : redirected to composition child ZC_POScheduleLine,
+      _PurchaseOrder : redirected to parent ZC_PurchaseOrder
+}
+```
+
+### Provider Contracts
+- `transactional_query` — UI transacional (CRUD + actions)
+- `transactional_interface` — API para consumo externo (A2X)
+- `analytical_query` — Analytics (Fiori Analytical apps)
+
+## 3. Behavior Definition
+
+Define operacoes disponiveis.
+
+```bdd
+managed implementation in class ZBP_R_PURCHASEORDERITEM unique;
+strict ( 2 );
+
+define behavior for ZR_PurchaseOrderItem alias POItem
+persistent table zpurchorderitem
+lock master
+authorization master ( instance )
+etag master LastChangedAt
+{
+  create;
+  update;
+  delete;
+
+  // Determinations
+  determination SetDefaults on modify { create; }
+  determination CalculateNetValue on modify { field Quantity, UnitPrice; }
+
+  // Validations
+  validation ValidateMaterial on save { create; update; field Material; }
+  validation ValidateQuantity on save { create; update; field OrderQuantity; }
+
+  // Actions
+  action ( features : instance ) Approve result [1] $self;
+  action ( features : instance ) Reject result [1] $self;
+
+  // Field control
+  field ( readonly ) PurchaseOrder;
+  field ( mandatory ) Material, OrderQuantity;
+
+  // Associations
+  association _ScheduleLine { create; }
+
+  // Mapping
+  mapping for zpurchorderitem
+  {
+    PurchaseOrder     = purchase_order;
+    PurchaseOrderItem = purchase_order_item;
+    Material          = material;
+    OrderQuantity     = quantity;
+    NetPrice          = net_price;
+  }
+}
+```
+
+### Tipos de Behavior
+- **managed**: RAP gerencia CRUD automaticamente (recomendado)
+- **unmanaged**: Voce implementa todo o CRUD manualmente
+- **abstract**: Para parametros de actions/functions
+
+### Operacoes
+- **standard**: create, update, delete
+- **determination**: Logica automatica disparada por evento (on modify, on save)
+- **validation**: Validacao disparada por evento (on save)
+- **action**: Acao customizada (botao na UI)
+- **function**: Funcao que retorna dados sem alterar estado
+
+## 4. Behavior Implementation
+
+Classe ABAP com a logica.
+
+```abap
+CLASS lhc_poitem DEFINITION INHERITING FROM cl_abap_behavior_handler.
+  PRIVATE SECTION.
+    METHODS validate_material FOR VALIDATE ON SAVE
+      IMPORTING keys FOR POItem~ValidateMaterial.
+
+    METHODS calculate_net_value FOR DETERMINE ON MODIFY
+      IMPORTING keys FOR POItem~CalculateNetValue.
+
+    METHODS approve FOR MODIFY
+      IMPORTING keys FOR ACTION POItem~Approve RESULT result.
+
+    METHODS get_instance_features FOR INSTANCE FEATURES
+      IMPORTING keys REQUEST requested_features FOR POItem RESULT result.
+ENDCLASS.
+
+CLASS lhc_poitem IMPLEMENTATION.
+  METHOD validate_material.
+    READ ENTITIES OF ZR_PurchaseOrderItem IN LOCAL MODE
+      ENTITY POItem
+        FIELDS ( Material )
+        WITH CORRESPONDING #( keys )
+      RESULT DATA(lt_items).
+
+    LOOP AT lt_items INTO DATA(ls_item).
+      IF ls_item-Material IS INITIAL.
+        APPEND VALUE #(
+          %tky = ls_item-%tky
+          %msg = new_message_with_text( text = 'Material e obrigatorio' severity = if_abap_behv_message=>severity-error )
+          %element-Material = if_abap_behv=>mk-on
+        ) TO reported-poitem.
+        APPEND VALUE #( %tky = ls_item-%tky ) TO failed-poitem.
+      ENDIF.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.
+```
+
+### EML - Entity Manipulation Language
+```abap
+" Ler entidades
+READ ENTITIES OF ZR_PurchaseOrderItem
+  ENTITY POItem
+    FIELDS ( Material Quantity )
+    WITH CORRESPONDING #( keys )
+  RESULT DATA(lt_items).
+
+" Modificar entidades
+MODIFY ENTITIES OF ZR_PurchaseOrderItem
+  ENTITY POItem
+    UPDATE SET FIELDS WITH VALUE #(
+      ( %tky = ls_item-%tky  Status = 'APPROVED' )
+    ).
+
+" Executar action
+MODIFY ENTITIES OF ZR_PurchaseOrderItem
+  ENTITY POItem
+    EXECUTE Approve FROM CORRESPONDING #( keys )
+  RESULT DATA(lt_result).
+```
+
+## 5. Service Definition
+
+```cds
+@EndUserText.label: 'Purchase Order Service'
+define service ZUI_PURCHASEORDER_V4 {
+  expose ZC_PurchaseOrderItem as PurchaseOrderItem;
+  expose ZC_POScheduleLine as ScheduleLine;
+}
+```
+
+## 6. Service Binding
+
+Criado no ADT como objeto separado:
+- **OData V4 - UI**: Para Fiori Elements apps
+- **OData V4 - Web API**: Para consumo API (A2X)
+- **OData V2 - UI**: Compatibilidade com Fiori V2
+- **InA**: Analytics (SAC)
+
+## Draft Handling
+
+Para cenarios onde o usuario salva rascunhos:
+
+```bdd
+managed implementation in class ZBP_R_PO unique;
+strict ( 2 );
+with draft;
+
+define behavior for ZR_PurchaseOrder alias PO
+persistent table zpur_order
+draft table zpur_order_d     " tabela de draft
+lock master total etag LastChangedAt
+authorization master ( instance )
+etag master LastChangedAt
+{
+  create;
+  update;
+  delete;
+
+  draft action Edit;
+  draft action Resume;
+  draft action Activate optimized;
+  draft action Discard;
+  draft determine action Prepare;
+}
+```
+
+## Resumo de Naming Conventions
+
+| Artefato | Prefixo | Exemplo |
+|----------|---------|---------|
+| CDS Interface (Root) | ZR_ | ZR_PurchaseOrder |
+| CDS Projection | ZC_ | ZC_PurchaseOrder |
+| Metadata Extension | ZC_ (mesmo da projection) | ZC_PurchaseOrder.metadataextension |
+| Behavior Impl Class | ZBP_ | ZBP_R_PurchaseOrder |
+| Service Definition | ZUI_ ou ZAPI_ | ZUI_PURCHASEORDER_V4 |
+| Service Binding | ZUI_ ou ZAPI_ + _O4 | ZUI_PURCHASEORDER_O4 |
+| Abstract Entity | ZA_ | ZA_ApproveParameters |
+| Custom Entity | ZCE_ | ZCE_ExternalData |
+| DB Table | Z + lowercase | zpurchorder |
+| Draft Table | Z + lowercase + _d | zpurchorder_d |

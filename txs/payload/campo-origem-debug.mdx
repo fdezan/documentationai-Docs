@@ -1,0 +1,691 @@
+---
+title: "TXS — Campos, Origens e Debug Points"
+description: "Referencia rapida: campo -> origem -> debug. Para detalhes, consulte os documentos individuais."
+---
+
+<Callout kind="info">
+Referencia rapida: campo -> origem -> debug. Para detalhes, consulte os documentos individuais.
+Fontes: txs-payload-header.md, txs-payload-items.md, txs-payload-locations.md, txs-payload-parties.md, txs-response-structure.md, txs-condition-mapping.md
+</Callout>
+
+
+---
+
+## 1. TXS_PAYLOAD (Header)
+
+| Campo | Origem | Debug |
+|-------|--------|-------|
+| `id` | UUID gerado via `CL_SYSTEM_UUID=>CREATE_UUID_X16_STATIC()` | `CL_TXS_DAO::GENERATE_PAYLOAD_ID` (cl_txs_dao.abap:120) |
+| `company_id` | `KOMK-BUKRS` via `pricing_context->get_header()-bukrs` | `CL_TXS_PAYLOAD::BUILD_HEADER` (cl_txs_payload.abap:109) |
+| `date` | SD billing: `KOMK-FKDAT`; SD outros: `KOMK-PRSDT`; STO SD: `KOMK-FKDAT` (fallback `KOMK-ERDAT`); STO MM: `KOMK-PRSDT`; MM outros: `SY-DATUM` + `SY-TIMLO` | `CL_TXS_PAYLOAD_BR::GET_PAYLOAD_DATE` (cl_txs_payload_br.abap:257) |
+| `saleor_purchase` | `KAPPL`: `'V'` -> sale, `'TX'` -> purchase. Via internal codes `API_SALE` / `API_PURCHASE` | `CL_TXS_PAYLOAD::GET_SALES_OR_PURCHASE` (cl_txs_payload.abap:199) |
+| `gross_or_net` | Downpayment/AR/customer DP -> `gross`; MM gross_price_active + nao invoice -> `gross`; Default -> `net` | `CL_TXS_PAYLOAD_BR::GET_GROSS_OR_NET` (cl_txs_payload_br.abap:76) |
+| `currency` | `KOMK-WAERK` via `pricing_context->get_currency()` | `CL_TXS_PAYLOAD::BUILD_HEADER` (cl_txs_payload.abap:108) |
+| `operation_nature_code` | `CL_TXS_OPERATION_NATURE_BR` — despacha por STO/SD/MM | `CL_TXS_PAYLOAD_BR::GET_OPERATION_NATURE_CODE` (cl_txs_payload_br.abap:101) |
+| `cash_discount_percent` | **Nao populado** — apenas via BAdI `BD_GSLOG_EXT_TAX_CALC_PAYLOAD` | — |
+| `business_partner_id` | **Nao populado** — apenas via BAdI | — |
+| `is_transaction_in_tax_group` | **Nao populado** | — |
+| `is_comp_deferred_tax_enabled` | **Nao populado** | — |
+| `is_cash_discount_planned` | **Nao populado** | — |
+| `_items` | `CL_TXS_ITEMS=>GET_INSTANCE` (tabela `TXS_ITEM_TTY`) | Ver secao 2 |
+| `_locations` | `CL_TXS_LOCATIONS=>GET_INSTANCE` (tabela `TXS_LOCATION_TTY`) | Ver secao 6 |
+| `_party` | `CL_TXS_PARTY=>GET_INSTANCE` (tabela `TXS_PARTY_TTY`) | Ver secao 7 |
+| `_bp_exemption_details` | `CL_TXS_BP_EXEMPTIONS=>GET_INSTANCE` — **vazio no BR** | — |
+| `_extensions` | BAdI `BD_GSLOG_EXT_TAX_CALC_PAYLOAD::EXTEND_PAYLOAD` | `CL_TXS_PAYLOAD::APPLY_CUSTOM_LOGIC` (cl_txs_payload.abap:68) |
+
+### Operation Nature Codes (if_txs_constants_br::operation_nature)
+
+| Valor | Descricao | Cenario |
+|-------|-----------|---------|
+| `P` | Compra padrao | MM |
+| `PI` | Invoice de compra (MIRO) | MM |
+| `S` | Venda padrao | SD |
+| `SI` | Fatura de venda | SD |
+| `CI` | Invoice de consignacao | MM/SD |
+| `CS` | Remessa de consignacao | MM |
+| `CRG` | Retorno de consignacao | MM |
+| `CM` | Nota de credito | SD |
+| `DM` | Nota de debito | SD |
+| `FI` | Fatura entrega futura | SD |
+| `FS` | Remessa entrega futura | SD |
+| `RO` | Devolucao NF propria | SD |
+| `RC` | Devolucao NF do cliente | SD |
+| `RP` | Embalagem retornavel | SD |
+| `RV` | Devolucao ao fornecedor | MM |
+| `SD` | Debito subsequente | MM |
+| `TPS` | Remessa terceiro | SD |
+| `TPI` | Fatura terceiro | SD |
+| `GI` | Saida subcontratacao (mvt 541) | MM |
+| `GR` | Recebimento subcontratacao (mvt 542) | MM |
+| `GRS` | Recebimento simbolico subcontratacao (mvt 543) | MM |
+| `STO` | STO saida | STO |
+| `STI` | STO entrada | STO |
+| `SRO` | Retorno STO saida | STO |
+| `SRI` | Retorno STO entrada | STO |
+
+---
+
+## 2. TXS_ITEM (Campos Escalares)
+
+| Campo | Origem | Debug |
+|-------|--------|-------|
+| `id` | `KOMP-KPOSN` (numero item pricing) | `CL_TXS_ITEMS::GET_ID` (cl_txs_items.abap:169) |
+| `item_code` | `pricing_context->get_material_number()` | `CL_TXS_ITEMS::GET_ITEM_CODE` (cl_txs_items.abap:186) |
+| `item_type` | `pricing_context->is_service()` -> `API_ITEM_TYPE_SERVICE` / `API_ITEM_TYPE_MATERIAL` | `CL_TXS_ITEMS::GET_ITEM_TYPE` (cl_txs_items.abap:190) |
+| `quantity` | BR: toggle `GLO_LOG_BR_MAA_NF_AFD_MAPPING` -> `get_item_quantity_taxable()`, fallback `KOMP-MGAME` (invoice MAA); Base: `get_item_quantity_taxable()` | `CL_TXS_ITEMS_BR::GET_QUANTITY` (cl_txs_items_br.abap:55) |
+| `unit_price` | MM: `KWERT(CONDITION_TYPE_BASE_AMOUNT) / qty`; SD: `KWERT(TAAS_UNIT_PRICE_BASE) / qty`; Fallback: `NETPR/KPEIN` | `CL_TXS_ITEMS_BR::GET_UNIT_PRICE` (cl_txs_items_br.abap:93) |
+| `tax_code` | `KOMP-MWSKZ` | `CL_TXS_ITEMS::BUILD_HEADER` |
+| `item_type` | `pricing_context->is_service()` via internal codes | `CL_TXS_ITEMS::GET_ITEM_TYPE` |
+| `shipping_cost` | MM frete: `is_freight_incoming()` = true -> `API_INDICATOR_YES`; Demais: vazio | `CL_TXS_ITEMS_BR::GET_SHIPPING_COST` (cl_txs_items_br.abap:81) |
+| `material_group` | `KOMP-MATKL` | `CL_TXS_ITEMS::BUILD_HEADER` |
+| `tax_category` | Via internal code | `CL_TXS_ITEMS::BUILD_HEADER` |
+| `tax_code_country` | Via internal code | `CL_TXS_ITEMS::BUILD_HEADER` |
+| `tax_code_region` | Via internal code | `CL_TXS_ITEMS::BUILD_HEADER` |
+| `incoterm` | Via internal code | `CL_TXS_ITEMS::BUILD_HEADER` |
+| `certificate_id` | Via internal code (app Tax Configuration) | `CL_TXS_ITEMS::BUILD_HEADER` |
+
+---
+
+## 3. TXS_ITEM_CLASSIFICATION (sub-estrutura de item)
+
+### Material
+
+| `isc_system_code` | Origem (`isc_code`) | Debug |
+|-------------------|---------------------|-------|
+| `ncm` | `KOMP-STEUC` (= `MARC-STEUC` / `MARA-STEUC`), formatado sem pontos | `CL_TXS_ITEM_CLASSIFICATIONS_BR::GET_MATERIAL_NCM` (cl_txs_item_classifications_br.abap:386) |
+| `cest` | `cl_txs_material_dao_br=>get_cest(STEUC, MATNR)` | `CL_TXS_ITEM_CLASSIFICATIONS_BR::GET_MATERIAL_CEST` (cl_txs_item_classifications_br.abap:271) |
+| `ean` | `KOMP-EAN11` | `CL_TXS_ITEM_CLASSIFICATIONS_BR::GET_MATERIAL_EAN` (cl_txs_item_classifications_br.abap:312) |
+| `exTipi` | Ultimos 2-3 digitos do NCM (`KOMP-STEUC`) | `CL_TXS_ITEM_CLASSIFICATIONS_BR::GET_MATERIAL_EXTIPI` (cl_txs_item_classifications_br.abap:344) |
+
+### Servico
+
+| `isc_system_code` | Origem (`isc_code`) | Debug |
+|-------------------|---------------------|-------|
+| `servTypeExec` | MM: `dao_br->get_service_type(material, delivery_address TXJCD)`; SD: `dao_br->get_service_type(material, customer TXJCD)` | MM: `GET_MM_SERVICE_EXEC` (:413); SD: `GET_SD_SERVICE_EXEC` (:505) |
+| `servTypeFed` | `dao_br->get_abrasf_code(appl, material, TXJCD)` -> `FORMAT_ABRASF_CODE()` | MM: `GET_MM_SERVICE_FEDERAL` (:445); SD: `GET_SD_SERVICE_FEDERAL` (:526) |
+| `servTypeFrom` | MM: `dao_br->get_service_type(material, vendor TXJCD)`; SD: `dao_br->get_service_type(material, plant TXJCD)` | MM: `GET_MM_SERVICE_FROM` (:470); SD: `GET_SD_SERVICE_FROM` (:551) |
+| `NBS` | `logbr_nbs_reader_da->read_nbs_by_material(MATNR)` | `GET_NBS` (:491) |
+
+### STO
+
+| `isc_system_code` | Origem (`isc_code`) | Debug |
+|-------------------|---------------------|-------|
+| `ncm` | `dao->read_material_control_code(material, planta)` — planta conforme direcao STO | `GET_MATERIAL_NCM_STO` (:398) / `READ_MATERIAL_NCM_STO` (:572) |
+| `cest` | `dao_br->determine_cest(NCM formatado)` | `GET_MATERIAL_CEST_STO` (:287) |
+| `ean` | `dao->get_po_item_by_num()` -> `EKPO-EAN11` | `GET_MATERIAL_EAN_STO` (:326) |
+| `exTipi` | Ultimos digitos do NCM STO | `GET_MATERIAL_EXTIPI_STO` |
+
+---
+
+## 4. TXS_ADDIT_ITEM_INFORMATION (sub-estrutura de item)
+
+### Material
+
+| `type` | Origem (`information`) | Debug |
+|--------|------------------------|-------|
+| `materialorigin` | `KOMP-MTORG` (= `EKPO-J_1BMATORG`). 0=Nacional, 1-8=Importado | `GET_MATERIAL_ORIGIN` (:578) |
+| `ownproduction` | `KOMP-OWNPR`. Apenas SD. `API_INDICATOR_YES`/`NO` | `GET_MATERIAL_OWN_PRODUCTION` (:613) |
+| `referenceid` | `CL_TXS_REFERENCE_ID_BR` — GUID do TXS_TRACE | MM: `GET_REFERENCE_ID_MM` (:819); SD: `GET_REFERENCE_ID_SD` |
+| `taxclassification` | `dao_br->select_mat_tax_classification(material, date)` — BR01-BR09 | `GET_TAX_CLASSIFICATION` (:1192) |
+| `usage` | MM: `KOMP-MTUSE` (= `EKPO-J_1BMATUSE`) via `CL_TXS_USAGE_BR`; SD: `tax_code_sd` via `CL_TXS_USAGE_BR` | MM: `GET_MATERIAL_USAGE_MM` (:678); SD: `GET_MATERIAL_USAGE_SD` (:743) |
+| `usagepurpose` | MM: `MTUSE + tax_code` via `CL_TXS_USAGE_PURPOSE_BR`; SD: `doc_type + item_cat + tax_code_sd` | MM: `GET_MATERIAL_USAGE_PURPOSE_MM` (:705); SD: `GET_MATERIAL_USAGE_PURPOSE_SD` (:722) |
+| `commercialquantity` | `pricing_context->get_item_quantity_commercial()` — apenas se unidade difere | `GET_COMMERCIAL_QUANTITY` (:488) |
+| `subcontracting` | `pricing_context->is_subcontracting()` -> `API_SUBCONTRACTING_COMPONENT` / `API_SUBCONTRACTING_MAIN_ITEM` | `GET_SUBCONTRACTING_INFO` (:1162) |
+| `cprb` | Apenas SD. `CL_TXS_CPRB_BR::is_mat_cprb_relevant_sd()` | `GET_MATERIAL_CPRB_RELEVANT` (:516) |
+
+### Servico
+
+| `type` | Origem (`information`) | Debug |
+|--------|------------------------|-------|
+| `taxclassification` | Mesmo de material | `GET_TAX_CLASSIFICATION` (:1192) |
+| `usage` | Frete: `EKPO-J_1BMATUSE` via buffer/PO; MM: `KOMP-MTUSE`; SD: `KOMP-MTUSE` (se CBTA inativo) | `GET_SERVICE_USAGE` (:1036) |
+| `usagepurpose` | MM: `MTUSE`; SD: `doc_type + item_cat + tax_code_sd` | `GET_SERVICE_USAGE_PURPOSE` |
+| `laborcontract` | MM: `dao_br->get_reinf_service_type()`; SD: `tax_code_sd` ou `business_transaction` | MM: `GET_SERVICE_LABOR_CONTRACT_MM` (:972); SD: `GET_SERVICE_LABOR_CONTRACT_SD` (:995) |
+| `cprb` | MM: `CL_TXS_CPRB_BR::is_serv_cprb_relevant_mm()`; SD: `is_serv_cprb_relevant_sd()` | `GET_SERVICE_CPRB_RELEVANT` (:867) |
+| `referenceid` | Mesmo de material | `GET_REFERENCE_ID` (:819) |
+
+### STO
+
+| `type` | Origem (`information`) | Debug |
+|--------|------------------------|-------|
+| `materialorigin` | `dao->read_material_origin(material, supplying_plant)` | `GET_MATERIAL_ORIGIN_STO` (:592) |
+| `ownproduction` | STO outgoing: `dao->read_material_own_production(material, supplying_plant)` | `GET_MATERIAL_OWN_PRODUCT_STO` (:634) |
+| `ownproductiononplantorigin` | STO incoming (nao retorno): mesma fonte que ownproduction | `GET_MAT_OWNPROD_ORIG_PLANT_STO` (:776) |
+| `usage` | `dao_br->get_item_mat_usage_from_po()` via `CL_TXS_USAGE_BR::get_material_usage_sto()` | `GET_MATERIAL_USAGE_STO` (:757) |
+| `usagepurpose` | Apenas STO incoming | `GET_MATERIAL_USAGE_PURPOSE_MM` |
+| `taxclassification` | Mesmo de material | `GET_TAX_CLASSIFICATION` (:1192) |
+| `referenceid` | GUID TXS_TRACE | `GET_REFERENCE_ID` |
+| `commercialquantity` | Apenas STO outgoing | `GET_COMMERCIAL_QUANTITY` (:488) |
+
+### CBTA (Complementary Business Attributes — quando feature ativa)
+
+| `type` | Origem | Valor Default |
+|--------|--------|---------------|
+| `business_transaction` | Servico: `'S001'`; Material: `'S003'` | `APPEND_DEFAULT_ADD_ITEM_INFO` (:405) |
+| `usage` | Material: `'R'` | `APPEND_DEFAULT_ADD_ITEM_INFO` (:405) |
+
+### Material Usage Values (J_1BMATUSE)
+
+| Valor | Constante | Descricao |
+|-------|-----------|-----------|
+| `0` | `resale` | Revenda |
+| `1` | `industrialisation` | Industrializacao |
+| `2` | `consumption` | Consumo |
+| `3` | `asset` | Ativo |
+| `4` | `consumption_inputs` | Consumo de insumos |
+
+---
+
+## 5. TXS_COST_INFORMATION (sub-estrutura de item)
+
+<Callout kind="info">
+Nao preenchido para STO (`pricing_context->is_stock_transfer()` -> retorna vazio).
+</Callout>
+
+
+| `cost_type` | Condition Type (Internal Code) | Metodo | Debug |
+|-------------|-------------------------------|--------|-------|
+| `discount` | `TAAS_TOTAL_DISCOUNT` | `ABS(KWERT)` da condition type | `GET_DISCOUNT_COST` (cl_txs_cost_information_br.abap:89) |
+| `laborContractDiscount` | `CONDITION_TYPE_LABOR_CONTRACTS_INSS_BASE_DISCOUNT` | Iteracao em todas conditions, `ABS(KWERT)` | `GET_DISCOUNT_INSS_COST` (:103) |
+| `freight` | `TAAS_TOTAL_FREIGHT` | `ABS(KWERT)` da condition type | `GET_FREIGHT_COST` (:127) |
+| `insurance` | `TAAS_TOTAL_INSURANCE` | `ABS(KWERT)` da condition type | `GET_INSURANCE_COST` (:141) |
+| `otherExpenses` | `TAAS_TOTAL_OTHER_EXPENSE` | `ABS(KWERT)` da condition type | `GET_OTHER_EXPENSES_COST` (:155) |
+
+---
+
+## 6. TXS_LOCATION
+
+### Campos da Estrutura
+
+| Campo | Origem Tipica | Tabelas Fonte |
+|-------|---------------|---------------|
+| `type` | Via internal codes (`API_LOCATION_TYPE_*`) | `CL_TXS_INTERNAL_CODES` |
+| `address_line1` | `STRAS` | LFA1, T001W, KNA1, ADRC |
+| `address_line2` | Complemento (pouco usado no BR) | — |
+| `address_line3` | Terceira linha (pouco usado no BR) | — |
+| `zip_code` | `PSTLZ` / `POST_CODE1` | LFA1, T001W, KNA1, ADRC |
+| `city` | `ORT01` / `CITY1` | LFA1, T001W, KNA1, ADRC |
+| `county` | `COUNC` (planta) / `COUNTY` (ADRC) / `SPACE` (SD ship_to) | T001W, ADRC |
+| `state` | `REGIO` / `REGION` | LFA1, T001W, KNA1, ADRC |
+| `country` | `LAND1` / `COUNTRY` | LFA1, T001W, KNA1, ADRC |
+| `address_id` | Nao preenchido no builder | — |
+| `is_company_tax_registered` | **BR: corpo vazio** (limpo com CLEAR) | — |
+| `is_bp_tax_registered` | **BR: corpo vazio** (limpo com CLEAR) | — |
+
+### Location Types (Internal Codes)
+
+| Internal Code | Usado em |
+|---------------|----------|
+| `API_LOCATION_TYPE_SHIP_FROM` | MM Material, SD Material, STO |
+| `API_LOCATION_TYPE_SHIP_TO` | MM Material, SD Material, STO |
+| `API_LOCATION_TYPE_CONTRACT_FROM` | MM Servico, SD Servico, MM Frete |
+| `API_LOCATION_TYPE_CONTRACT_TO` | MM Servico, SD Servico, MM Frete, SD Third Party |
+| `API_LOCATION_TYPE_SERVICE_LOCATION` | MM Servico, SD Servico |
+| `API_LOCATION_TYPE_BILL_TO` | (reservado) |
+| `API_LOCATION_TYPE_SOLD_TO` | (reservado) |
+| `API_LOCATION_TYPE_PAYER` | (reservado) |
+
+### Locations por Cenario
+
+| Cenario | SHIP_FROM | SHIP_TO | CONTRACT_FROM | CONTRACT_TO | SERVICE_LOCATION | Debug Entry Point |
+|---------|-----------|---------|---------------|-------------|------------------|-------------------|
+| MM Material | LFA1 (vendor) | T001W (planta) | — | — | — | `ADD_LOCATIONS_MM_MAT` |
+| MM Material (Subcon) | T001W (planta) | LFA1 (vendor) | — | — | — | `GET_LOCATION_MM_SHIP_FROM` (inversao) |
+| MM Servico | — | — | LFA1 (vendor) | T001W (planta) | Delivery addr / T001W | `ADD_LOCATIONS_MM_SERV` |
+| MM Frete | LFA1 (goods supplier) | Delivery addr / T001W | LFA1 (transportador) | T001W (planta) | — | `ADD_LOCATIONS_MM_FREIGHT` |
+| MM Consignment Return | T001W (planta) | LFA1 (vendor) | — | — | — | `ADD_LOCATIONS_MM_CONS_RET` |
+| SD Material | T001W (planta) | KNA1 (cliente) | — | KNA1 (se Third Party) | — | `ADD_LOCATIONS_SD_MAT` |
+| SD Servico | — | — | T001W (planta) | KNA1 (cliente) | KNA1 (cliente) | `ADD_LOCATIONS_SD_SERV` |
+| STO | T001W (planta fornecedora) | T001W (planta receptora) | — | — | — | `ADD_LOCATIONS_STO` |
+
+---
+
+## 7. TXS_PARTY — Tax Registrations BR
+
+### Estrutura TXS_PARTY
+
+| Campo | Descricao |
+|-------|-----------|
+| `id` | Identificador sequencial (1, 2, 3...) |
+| `role` | Papel: SHIP_FROM, SHIP_TO, CONTRACT_FROM, CONTRACT_TO, SERVICE_LOCATION |
+| `tax_registration` | Tabela de `TXS_TAX_REGISTRATION` |
+
+### Estrutura TXS_TAX_REGISTRATION
+
+| Campo | Descricao |
+|-------|-----------|
+| `location_type` | Tipo de localizacao |
+| `tax_number` | Valor do registro |
+| `tax_number_type_code` | Codigo do tipo de registro |
+
+### Registros de Identificacao
+
+| `tax_number_type_code` | Origem (Tabela.Campo) | Debug |
+|------------------------|-----------------------|-------|
+| `CNPJ` | Vendor: `LFA1-STCD1`; Customer: `KNA1-STCD1`; Plant: `CL_TXS_DAO_BR=>GET_PLANT_DATA` | `GET_VALUE_CNPJ` (:1876) |
+| `CPF` | Vendor: `LFA1-STCD2`; Customer: `KNA1-STCD2`. **Ofuscado**: sempre `99999999999` | `GET_VALUE_CPF` (:1931) |
+| `IE` | Vendor: `LFA1-STCD3`; Customer: `KNA1-STCD3`; Plant: `J_1BBRANCH-STATE_INSC` | `GET_VALUE_IE` (:1977) |
+| `IM` | Vendor: `LFA1-STCD4`; Customer: `KNA1-STCD4`; Plant: `J_1BBRANCH-MUNIC_INSC` | `GET_VALUE_IM` (:1986) |
+| `IBGECode` | Vendor: `LFA1-TXJCD`; Customer: `KNA1-TXJCD`; Plant: `SADR-TXJCD` (limpa nao-numericos) | `GET_VALUE_IBGE_CODE` (:1966) |
+
+### Registros Fiscais Especiais
+
+| `tax_number_type_code` | Origem | Debug |
+|------------------------|--------|-------|
+| `CNAE` | Dados mestre: `LFA1-CNAE` (vendor), `KNA1-CNAE` (customer), `J_1BBRANCH-CNAE` (plant). ~~BRF+ descontinuado no TXS~~ | `GET_VALUE_CNAE` (:1867) |
+| `CPOM` | Plant: `LOGBR_CPOM_PLNT`; Vendor: `LOGBR_CPOM_VNDR` | `GET_VALUE_CPOM` (:1944) |
+| `SUFRAMA` | Dados mestre: `J_1BBRANCH-SUFRAMA` (plant), `KNA1-SUFRAMA` (customer). ~~BRF+ descontinuado no TXS~~ | `GET_VALUE_SUFRAMA` (:2018) |
+| `legalNature` | Vendor: `LFA1-LEGALNAT`; Customer: `KNA1-LEGALNAT`; Plant: `J_1BBRANCH-LEGALNAT` | `GET_VALUE_LEGAL_NATURE` (:2009) |
+| `companySize` | Vendor: `LFA1-COMSIZE`; Customer: `KNA1-COMSIZE`. Mapeado: GP->GE, ME->ME, MI->MEI, MP->MDE, PP->EPP | `GET_VALUE_COMPANY_SIZE` (:1887) |
+| `taxDeclarationType` | Vendor: `LFA1-TDT`; Customer: `KNA1-TDT`; Plant: `J_1BBRANCH-TDT`. LP->Presumed, LR->Real, SN->Simples | `GET_VALUE_TAX_DECLARATION_TYPE` (:2034) |
+| `taxRegimenCode` | Vendor: `LFA1-CRTN`; Customer: `KNA1-CRTN`; Plant: `J_1BBRANCH-CRTN` | `GET_VALUE_TAX_REGIMENT_CODE` (:2074) |
+| `isNaturalPerson` | `BP_DATA-NATPERS` via `CL_TXS_FM_BUSINESS_PARTNER=>GET_BUSINESS_PARTNER_DATA` | `GET_VALUE_IS_NATURAL_PERSON` (:1995) |
+| `industrialEquivalent` | `BUS_TB071` (tax_type = BR07, tax_group = 0/1) | `GET_INDUSTRIAL_EQUIVALENT` (:420) |
+| `consolidatedPCCWHT` | `CL_TXS_BP_SUPPLIER_BR=>IS_CONSOLIDATED_PCC_WHT`. Apenas MM Servico CONTRACT_FROM | `GET_VALUE_CONSOLIDATED_PCC_WHT` (:1922) |
+| `IPITaxSplit` | **Nao populado no standard** | — |
+
+### Status de Contribuinte
+
+Todos via `GET_VALUE_TAX_CONTRIBUTOR` (:2027) / `GET_BP_TAX_CONTRIBUTOR` (:332).
+Plant: campo direto da `J_1BBRANCH`. BP: `BUS_TB071` (tax_type + tax_group 0/1).
+
+| `tax_number_type_code` | Imposto | BP Tax Type | Campo Plant (`J_1BBRANCH`) |
+|------------------------|---------|-------------|----------------------------|
+| `ICMSContributor` | ICMS | BR01 | `ICMSCONTRIBUTOR` |
+| `ICMSSTContributor` | ICMS-ST | BR06 | `ICMSSTCONTRIBUTOR` |
+| `IPIContributor` | IPI | BR02 | `IPICONTRIBUTOR` |
+| `PISContributor` | PIS | BR03 | `PISCONTRIBUTOR` |
+| `COFINSContributor` | COFINS | BR04 | `COFINSCONTRIBUTOR` |
+| `ISSContributor` | ISS | BR05 | `ISSCONTRIBUTOR` |
+| `CBSContributor` | CBS | BR09 | — (apenas BP via `BUS_TB071`) |
+| `IBSContributor` | IBS | BR08 | — (apenas BP via `BUS_TB071`) |
+
+### BP Tax Types
+
+| Tax Type | Imposto |
+|----------|---------|
+| BR01 | ICMS |
+| BR02 | IPI |
+| BR03 | PIS |
+| BR04 | COFINS |
+| BR05 | ISS |
+| BR06 | ICMS-ST |
+| BR07 | Equiparado a Industria |
+| BR08 | IBS |
+| BR09 | CBS |
+
+### Company Size Mapping
+
+| Valor SAP (`COMSIZE`) | Valor TXS | Descricao |
+|-----------------------|-----------|-----------|
+| `GP` | `GE` | Grande Empresa |
+| `ME` | `ME` | Microempresa |
+| `MI` | `MEI` | Microempreendedor Individual |
+| `MP` | `MDE` | Media Empresa |
+| `PP` | `EPP` | Empresa Pequeno Porte |
+
+### Tax Declaration Type Mapping
+
+| Valor SAP (`TDT`) | Valor TXS | Descricao |
+|--------------------|-----------|-----------|
+| `LP` | Presumed Profit | Lucro Presumido |
+| `LR` | Real Profit | Lucro Real |
+| `SN` | Simples Nacional | Simples Nacional |
+
+### Parties por Cenario
+
+| Cenario | Party 1 (Role) | Party 2 (Role) | Party 3 (Role) |
+|---------|----------------|----------------|-----------------|
+| MM Material | Vendor (SHIP_FROM) | Plant (SHIP_TO) | — |
+| MM Material (Subcon/Consig Return) | Plant (SHIP_FROM) | Vendor (SHIP_TO) | — |
+| MM Servico | Vendor (CONTRACT_FROM) | Plant (CONTRACT_TO) | Delivery addr (SERVICE_LOCATION) |
+| MM Frete | Transportadora (CONTRACT_FROM) | Plant (CONTRACT_TO) | — |
+| SD Material | Plant (SHIP_FROM) | Customer (SHIP_TO) | Customer (CONTRACT_TO) se Third Party |
+| SD Servico | Plant (CONTRACT_FROM) | Customer (CONTRACT_TO) | Customer (SERVICE_LOCATION) |
+| STO | Plant fornecedora (SHIP_FROM) | Plant receptora (SHIP_TO) | — |
+| Importacao | Vazio (SHIP_FROM) | Plant (SHIP_TO) | — |
+
+---
+
+## 8. TXS_RESPONSE (Resposta do Tax Engine)
+
+| Campo | Descricao | Mapeamento |
+|-------|-----------|------------|
+| `id` | Transaction ID (correlacao com request) | Buffer: `trace_guid` |
+| `total` | Total com impostos | `MAP_COND_TAAS_TOTAL` -> `KOMV-KWERT = total`, `KBETR = 1000` |
+| `inclusive` | Flag imposto incluido no preco (`true`/`false`) | — |
+| `sub_total` | Base antes dos impostos | `MAP_COND_TAAS_SUBTOTAL` -> `KOMV-KWERT = sub_total`, `KBETR = total_tax` |
+| `total_tax` | Total de impostos | Usado como KBETR do TAAS_SUBTOTAL |
+| `total_withholding_tax` | Total retencao (IR + CSLL + PIS-WHT + COFINS-WHT + INSS-WHT) | — |
+| `country` | Codigo do pais (`BR`) | — |
+| `date` | Timestamp da resposta | Buffer; truncado p/ 10 chars no hash |
+| `tax_lines[]` | Uma por item | Ver secao 9 |
+| `warning[]` | Alertas do motor (`code` + `description`) | — |
+
+---
+
+## 9. TXS_TAX_LINE (Por Item da Response)
+
+| Campo | Descricao | Uso |
+|-------|-----------|-----|
+| `id` | Correlacao com `TXS_ITEM-id` | Chave de lookup |
+| `total_tax` | Soma impostos do item | Consolidado |
+| `taxcode` | Codigo externo do tax engine (NAO e MWSKZ) | Mapeado via `TXSMAPEXTTOERP` -> `s4_tax_code` |
+| `total_rate` | Aliquota total combinada | — |
+| `total_withholding_tax` | Total WHT do item | — |
+| `total_withholding_tax_rate` | Aliquota total WHT | — |
+| `withholding_tax_code` | Codigo WHT | — |
+| `tax_values[]` | Um por tipo de imposto | Ver secao 10 |
+
+---
+
+## 10. TXS_TAX_VALUE (Valores por Tipo de Imposto)
+
+| Campo | Mapeamento KOMV | Debug |
+|-------|----------------|-------|
+| `tax_type_code` | Identifica o imposto -> dispatch `BUILD_MM_*` / `BUILD_SD_*` | `CL_TXS_TAX_TYPES_VALUES_BR::BUILD` |
+| `rate` | `KOMV-KBETR = rate * 10` (fator `CON_FACTOR = 10`) | `MAP_COND_RATE` |
+| `taxable` | `KOMV-KAWRT` (base alternativa) | `MAP_COND_AMOUNT` |
+| `value` | `KOMV-KWERT` (valor do imposto) | `MAP_COND_AMOUNT` |
+| `exempted_base_percent` | ICMS-ST: `KBETR = pct * 10`; Outros: `KBETR = (100 - pct) * 10` | `MAP_COND_BASE_REDUCTION_RATE` |
+| `exempted_base_amount` | `KOMV-KWERT` (base isenta) | `MAP_COND_EXCLUDED_BASE` |
+| `other_base_amount` | `KOMV-KWERT` (pauta fiscal) | `MAP_COND_OTHER_BASE` |
+| `non_deductible_tax_rate` | Aliquota nao dedutivel | Sem mapeamento direto |
+| `non_deductible_tax_amount` | Valor nao dedutivel | Sem mapeamento direto |
+| `deductible_tax_amount` | Credito fiscal. `HAS_CREDIT` = true se > 0 | Logica interna |
+| `jurisdiction` | Nome da jurisdicao (ex: "Sao Paulo") | Nao mapeado |
+| `jurisdiction_code` | UF (ex: SP, RJ) | `CL_TXS_JURISDICTION_MAPPER` |
+| `due_category` | `P` = payable (a pagar) | Constante `DUE_CATEGORY_PAYABLE = 'P'` |
+| `is_tax_deferred` | Flag diferimento (`true`/`false`) | Logica ICMS-DP |
+| `withholding_relevant` | Flag WHT (`true`/`false`) | — |
+| `full_rate` | Aliquota original (antes de reducoes) | — |
+| `level` | Nivel hierarquia (imposto-sobre-imposto) | Uso interno |
+| `name` | Nome legivel | Nao mapeado |
+| `tax_attributes[]` | CST, CENQ, surchargeRate, collectionCode, etc. | Ver secao 11 |
+
+### Fatores de Conversao
+
+| Constante | Valor | Uso |
+|-----------|-------|-----|
+| `CON_FACTOR` | 10 | rate * 10 -> KBETR |
+| `CON_TOTAL_PERCENTAGE` | 100 | Calculo reducao de base |
+| `CON_TAAS_TOTAL_PERCENTAGE` | 1000 | KBETR fixo do TAAS_TOTAL |
+| `CON_PAUTA_PRICING_UNIT` | 1 | KPEIN fixo para pauta |
+| `CON_PAUTA_FACTOR_RATE_4_DEC` | 100 | Rate 4 decimais |
+
+---
+
+## 11. TXS_TAX_ATTRIBUTE
+
+| `attribute_type` | Significado | Classe Extratora |
+|------------------|-------------|------------------|
+| `CST` | Codigo Situacao Tributaria | `IF_TXS_TAX_ATTRIBUTES_BR::get_cst()` |
+| `CENQ` | Codigo Enquadramento IPI | `IF_TXS_TAX_ATTRIBUTES_BR::get_cenq()` |
+| `surchargeRate` | MVA / sobretaxa ICMS-ST | `IF_TXS_TAX_ATTRIBUTES_BR::get_surcharge_rate()` |
+| `collectionCode` | Codigo arrecadacao GNRE/DARF | `IF_TXS_TAX_ATTRIBUTES_BR::get_collection_code()` |
+| `pautaQuantity` | Quantidade pauta fiscal | `IF_TXS_TAX_ATTRIBUTES_BR::get_pauta_quantity()` |
+| `pautaUnit` | Unidade de medida pauta | `IF_TXS_TAX_ATTRIBUTES_BR::get_pauta_unit()` |
+| `baseDetermination` | Modalidade determinacao de base | `IF_TXS_TAX_ATTRIBUTES_BR::get_base_determination()` |
+| `legalProvision` | Fundamentacao juridica | `IF_TXS_TAX_ATTRIBUTES_BR::get_legal_provision()` |
+| `legalPCode` | Codigo provisao legal | `IF_TXS_TAX_ATTRIBUTES_BR::get_legal_provision_code()` |
+| `CST-MUN_TAXSIT` | CST Municipal (ISS) | `IF_TXS_TAX_ATTRIBUTES_BR::get_cst_mun()` |
+| `deferral_percentage` | Percentual diferimento ICMS | `IF_TXS_TAX_ATTRIBUTES_BR::get_deferral_percentage()` |
+| `deferral_amount` | Valor diferido ICMS | `IF_TXS_TAX_ATTRIBUTES_BR::get_deferral_amount()` |
+| `reduction_percentage` | Percentual reducao de base | `IF_TXS_TAX_ATTRIBUTES_BR::get_reduction_percentage()` |
+| `cbenef` | Codigo beneficio fiscal (NF-e) | Via internal codes |
+| `cclas_trib` | Classificacao tributaria | `IF_TXS_TAX_ATTRIBUTES_BR::get_cclas_trib()` |
+| `pis_cofins_exclusion` | Exclusao PIS/COFINS da base | Via internal codes |
+| `mot_des_icms` | Motivo desoneracao ICMS | Via internal codes |
+| `tax_refund_amount` | Valor ressarcimento | `IF_TXS_TAX_ATTRIBUTES_BR::get_tax_refund_amount()` |
+| `gov_reduct_percentage` | Percentual reducao governamental | `IF_TXS_TAX_ATTRIBUTES_BR::get_gov_reduct_percentage()` |
+| `regular_cst` | CST regular (antes beneficio) | `IF_TXS_TAX_ATTRIBUTES_BR::get_regular_cst()` |
+| `regular_cclass_trib` | Classificacao tributaria regular | `IF_TXS_TAX_ATTRIBUTES_BR::get_regular_cclas_trib()` |
+| `regular_rate` | Aliquota regular | `IF_TXS_TAX_ATTRIBUTES_BR::get_regular_rate()` |
+| `regular_amount` | Valor regular | `IF_TXS_TAX_ATTRIBUTES_BR::get_regular_amount()` |
+| `gov_entity_type_code` | Tipo entidade governamental | `IF_TXS_TAX_ATTRIBUTES_BR::get_gov_entity_type_code()` |
+| `gov_pur_amount` | Valor compra governamental | `IF_TXS_TAX_ATTRIBUTES_BR::get_gov_procurement_amount()` |
+| `gov_pur_rate` | Aliquota compra governamental | `IF_TXS_TAX_ATTRIBUTES_BR::get_gov_procurement_rate()` |
+
+### Uso Tipico por Imposto
+
+| Imposto | Atributos Tipicos |
+|---------|-------------------|
+| ICMS | `CST`, `baseDetermination`, `legalProvision`, `legalPCode` |
+| ICMS-ST | `CST`, `surchargeRate`, `collectionCode` |
+| ICMS-DP | `CST`, `deferral_percentage`, `deferral_amount` |
+| IPI | `CST`, `CENQ` |
+| PIS / COFINS | `CST` |
+| ISS | `CST-MUN_TAXSIT` |
+
+---
+
+## 12. Tax Type Codes BR
+
+Fonte: `if_txs_constants_br.abap:200-224`
+
+### Estaduais (ICMS)
+
+| `tax_type_code` | Constante | Descricao |
+|-----------------|-----------|-----------|
+| `ICMS` | `icms` | ICMS |
+| `ICMS-ST` | `icms_st` | ICMS Substituicao Tributaria |
+| `ICMS-FCP` | `icms_fcp` | Fundo Combate Pobreza |
+| `ICMS-ST-FCP` | `icms_st_fcp` | FCP sobre ICMS-ST |
+| `ICMS-DP` | `icms_dp` | Diferimento Parcial |
+| `ICMS-OP` | `icms_op` | ICMS Offset/Complementar |
+| `ICMS-D-FCP` | `icms_d_fcp` | FCP sobre ICMS Diferido |
+| `ICMS-DIFAL` | `icms_difal` | Diferencial de Aliquota |
+| `ICMS-DIFAL-FCP` | `icms_difal_fcp` | FCP sobre ICMS-DIFAL |
+
+### Federais
+
+| `tax_type_code` | Constante | Descricao |
+|-----------------|-----------|-----------|
+| `IPI` | `ipi` | IPI |
+| `PIS` | `pis` | PIS |
+| `PIS-WHT` | `pis_wht` | PIS Retencao |
+| `COFINS` | `cofins` | COFINS |
+| `COFINS-WHT` | `cofins_wht` | COFINS Retencao |
+| `CSLL-WHT` | `csll_wht` | CSLL Retencao |
+| `IR-WHT` | `ir_wht` | IRRF |
+| `IR-WHT-INVOICE` | `ir_wht_inv` | IRRF Invoice |
+
+### Municipais (ISS)
+
+| `tax_type_code` | Constante | Descricao |
+|-----------------|-----------|-----------|
+| `ISS-PROV` | `iss_prov` | ISS Provedor |
+| `ISS-PROV-WHT` | `iss_prov_wht` | ISS Provedor Retencao |
+| `ISS-EXEC` | `iss_exec` | ISS Executor |
+| `ISS-EXEC-WHT` | `iss_exec_wht` | ISS Executor Retencao |
+
+### Previdenciarios
+
+| `tax_type_code` | Constante | Descricao |
+|-----------------|-----------|-----------|
+| `INSS-WHT` | `inss_wht` | INSS Retencao |
+| `INSS-CPRB` | `inss_cprb` | INSS CPRB (Desoneracao) |
+
+### Dispatch por Tax Type Code
+
+| tax_type_code | Metodo MM | Metodo SD |
+|---------------|-----------|-----------|
+| ICMS, ICMS-ST, ICMS-FCP, ICMS-ST-FCP, ICMS-DIFAL, ICMS-DIFAL-FCP, ICMS-FTZ | `BUILD_MM_ICMS` | `BUILD_SD_ICMS` |
+| ICMS-DP, ICMS-OP | — | `BUILD_SD_ICMS` |
+| IPI | `BUILD_MM_IPI` | `BUILD_SD_IPI` |
+| PIS | `BUILD_MM_PIS` | `BUILD_SD_PIS` |
+| PIS-WHT | `BUILD_MM_PIS_WHT` | `BUILD_SD_PIS_WHT` |
+| COFINS | `BUILD_MM_COFINS` | `BUILD_SD_COFINS` |
+| COFINS-WHT | `BUILD_MM_COFINS_WHT` | `BUILD_SD_COFINS_WHT` |
+| CSLL-WHT | `BUILD_MM_CSLL` | `BUILD_SD_CSLL` |
+| IR-WHT | `BUILD_MM_IR` | `BUILD_SD_IR` |
+| IR-WHT-INVOICE | `BUILD_MM_IR_WHT_INVOICE` | `BUILD_SD_IR_WHT_INVOICE` |
+| INSS-WHT | `BUILD_MM_INSS_WHT` | `BUILD_SD_INSS_WHT` |
+| INSS-CPRB | — | `BUILD_SD_INSS_CPRB` |
+| II | `BUILD_MM_II` | — |
+| ISS-PROV, ISS-EXEC, ISS-PROV-WHT, ISS-EXEC-WHT | `BUILD_ISS` | `BUILD_ISS` |
+
+---
+
+## 13. Condition Types por Imposto (KSCHL)
+
+Fonte: `if_logbr_ft_txs_constants.abap`, `if_txs_constants_br.abap`, `if_txs_constants.abap`
+
+| Imposto | Condition Types |
+|---------|-----------------|
+| Service Call | `TXSC` |
+| ICMS | `BX16`, `ICM1`, `ICM2`, `BX10`, `BX11`, `BX12`, `BIC1` |
+| IPI | `BIP0`, `IPI1`, `IPI2`, `BX20`, `BX21`, `BX22`, `BXPA`, `BIP1` |
+| PIS | `BPI1`, `IPIS`, `IPSN`, `BX80`, `BX81`, `BX82`, `BPIP` |
+| COFINS | `BCO1`, `ICOF`, `ICON`, `BX70`, `BX71`, `BX72`, `BCOP` |
+| II | `BXIR`, `II01`, `BASB`, `BXIE`, `BXII` |
+| PIS pauta | `BPI8` |
+| COFINS pauta | `BCO8` |
+| IRRF | `BW61`, `BX9U`, `BX9V` |
+| INSS | `BW71`, `BX9R`, `BX9S` |
+| ICMS Zona Franca rate | `BXRF` |
+| ICMS Zona Franca base | `BXBF` |
+| PIS fornecedor | `CPIS` |
+| COFINS fornecedor | `CCOS` |
+
+---
+
+## 14. Mapeamento J_1BNFTXCOND -> KOMV
+
+| Campo J_1BNFTXCOND | Metodo Mapper | KOMV Resultado |
+|---------------------|---------------|----------------|
+| `rate` | `MAP_COND_RATE` | `KWERT = rate * 10`, `KBETR = rate * 10` |
+| `value` | `MAP_COND_AMOUNT` | `KWERT = value`, `KBETR = rate * 10`, `KAWRT = taxable` |
+| `base` | `MAP_COND_BASE` | `KWERT = taxable` |
+| `basered1` | `MAP_COND_BASE_REDUCTION_RATE` | ICMS-ST: `KBETR = pct * 10`; Outros: `KBETR = (100 - pct) * 10` |
+| `excbas` | `MAP_COND_EXCLUDED_BASE` | `KWERT = exempted_base_amount` |
+| `othbas` | `MAP_COND_OTHER_BASE` | `KWERT = other_base_amount` |
+| `whtcollcode` | `MAP_COND_WHT_COLLECTION_CODE` | `KNUMA_BO = collection_code` |
+| `srate` | `MAP_COND_ST_SURCHARGE_RATE` | `KWERT = surcharge / 10`, `KBETR = surcharge * 10` |
+| `qrate` | `MAP_COND_PAUTA_RATE` | `KWERT = rate`, `KBETR = rate * 10`, `KMEIN = pauta_unit`, `KPEIN = 1` |
+| `qrate4dec` | `MAP_COND_PAUTA_RATE_4DEC` | `KWERT = rate * 100`, `KBETR = KWERT`, `KMEIN`, `KPEIN = 1` |
+| `rate4dec` | `MAP_COND_RATE_4DEC` | `KWERT = pauta_qty * 100` |
+| `qbase` | `MAP_COND_PAUTA_BASE` | `KWERT = pauta_qty * 10`, `KMEIN = pauta_unit`, `KPEIN = 1` |
+| *(TAAS_SUBTOTAL)* | `MAP_COND_TAAS_SUBTOTAL` | `KWERT = sub_total`, `KBETR = total_tax` |
+| *(TAAS_TOTAL)* | `MAP_COND_TAAS_TOTAL` | `KWERT = total`, `KBETR = 1000` (fixo) |
+| *(others)* | — | `KINAK = 'X'` (excluida) ou `KINAK = 'Z'` (uso interno) |
+
+---
+
+## 15. Exclusao de Conditions (KINAK)
+
+| KINAK | Significado | Quando |
+|-------|-------------|--------|
+| `X` | Excluida por formula / nao mapeada | Condition type nao encontrada no mapeamento |
+| `Z` | TXS inativo / uso interno | `CL_TXS_SWITCH::IS_ACTIVE()` = false; mapper base fallback |
+
+---
+
+## 16. Excecoes de Condition (TXS_CNDNS_EXCEPTIONS_HANDLE_BR)
+
+| Condition | Logica | Resultado |
+|-----------|--------|-----------|
+| `ICMO` | Total ICMS da operacao | `KWERT = -1 * total_icms`, `KBETR = -1 * total_pct` |
+| `BX13` | Zona Franca (CBTA ativa) | Se ICMS-FTZ presente, `KWERT = 0` |
+
+---
+
+## 17. BP Exemption Detail
+
+| Campo | Descricao |
+|-------|-----------|
+| `location_type` | Local da isencao |
+| `exemptionreasoncode` | Codigo classificacao da isencao |
+
+<Callout kind="info">
+**BR**: Metodo `ADD_BP_EXEMPTIONS` vazio. Isencoes nao enviadas no standard. Usar BAdI.
+</Callout>
+
+
+---
+
+## 18. BRF+ Objects para CNAE (UUIDs) — DESCONTINUADO no TXS
+
+<Callout kind="warning">
+**DESCONTINUADO**: A SAP descontinuou o uso de BRF+ dentro do TXS. CNAE e SUFRAMA agora vem dos dados mestre. O BRF+ como tecnologia continua funcionando para outros fins. UUIDs mantidos apenas para referencia historica.
+</Callout>
+
+
+| Cenario | Function UUID | Object UUID |
+|---------|---------------|-------------|
+| MM BP Material | `40F2E9AFBE791ED9BEE645A291E3B35F` | `40F2E9AFC4E81EE9BFFD29B25363FAF7` |
+| MM BP Servico | `40F2E9AFC4E81EE9BEE60FE305DD0264` | `40F2E9AFC4E81ED9BFFFA4A9627FAC61` |
+| MM Plant Material | `42F2E9AFC3DF1EE9BEE9682ED3C480D1` | `40F2E9AFC4E81EE9BFFD54C7C39AFC04` |
+| MM Plant Servico | `42F2E9AFC3DF1ED9BEE5F70575010958` | `40F2E9AFC4E81ED9BFFFC64253068D12` |
+| SD BP Material | `42F2E9AFC3DF1EEA80CA7F581A8525CF` | `42F2E9AFC3DF1EEA80CA7F581A86A5CF` |
+| SD BP Servico | `42F2E9AFC3DF1EEA80CAF68CE704491B` | `42F2E9AFC3DF1EEA80CAF68CE705A91B` |
+| SD Plant Material | `42F2E9AFC3DF1EEA80CB04DA4A6E49AB` | `42F2E9AFC3DF1EEA80CB04DA4A6FA9AB` |
+| SD Plant Servico | `42F2E9AFC3DF1EEA80CB08FCD325C9B7` | `42F2E9AFC3DF1EEA80CB08FCD32709B7` |
+
+---
+
+## 19. Sequencia de Build do Payload
+
+```
+1. INITIALIZE          -> CLEAR payload
+2. BUILD_HEADER        -> id, date, saleor_purchase, gross_or_net, currency, company_id
+                          BR: + operation_nature_code
+3. BUILD_ITEM          -> CL_TXS_ITEMS (header, classifications, addit_info, cost, exemption)
+4. BUILD_LOCATIONS     -> CL_TXS_LOCATIONS (dispatch MM/SD/STO)
+5. BUILD_PARTY         -> CL_TXS_PARTY (tax registrations)
+6. BUILD_BP_EXEMPTION  -> CL_TXS_BP_EXEMPTIONS (vazio no BR)
+7. APPLY_CUSTOM_LOGIC  -> BAdI BD_GSLOG_EXT_TAX_CALC_PAYLOAD::EXTEND_PAYLOAD
+```
+
+---
+
+## 20. Fluxo do Mapeamento (Response -> KOMV)
+
+```
+Formula 279 (Pricing)
+  -> CL_TXS_CONTROLLER::EXECUTE
+     -> CLEAR_PRICING_CONDITION_VALUES (limpa KWERT, KBETR, KAWRT, KNUMA_BO)
+     -> PROCESS_CONDITION_RECORD
+        TXSC? -> CALL_TXS_FROM_PRICING_FORMULA (HTTP)
+        Outro? -> MAP_TXS_TO_PRICING_FORMULA
+                  -> CL_TXS_COND_MAPPER_FACTORY (3 niveis: custom / V2 / BR)
+                  -> MAP_TAX_TYPE_TO_CONDITION (CASE condition -> metodo)
+                  -> PROCESS_BUSINESS_EXCEPTION (ICMO, BX13)
+```
+
+---
+
+## 21. Feature Toggles
+
+| Feature Toggle | Onde Usado | Efeito |
+|----------------|------------|--------|
+| `GLO_LOG_BR_MAA_NF_AFD_MAPPING` | Items: quantity, unit_price MM | Ativa logica quantidade taxable com fallback MGAME |
+| `GLO_LOG_BR_BKJ_ROUND` | Items: unit_price MM | Fixa componente `'MM'` na busca do internal code |
+| `GLO_LOG_BR_EXT_JSON_RESP` | Controller: response buffer | Controla metodo de armazenamento da response |
+| `complementary_business_attr` | Additional item info | Ativa CBTA: defaults business_transaction/usage; desativa usage/purpose SD |
+
+---
+
+## 22. Tabelas SAP Referenciadas
+
+| Tabela | Campos Usados | Bloco do Payload |
+|--------|---------------|------------------|
+| `KOMK` | BUKRS, WAERK, FKDAT, ERDAT, PRSDT, KAPPL, VBTYP, AUART_SD | Header |
+| `KOMP` | KPOSN, MWSKZ, MATKL, STEUC, EAN11, MTORG, MTUSE, OWNPR, MGAME, PSTYP, PSTYV | Item, Classifications, Additional Info |
+| `LFA1` | STRAS, PSTLZ, ORT01, REGIO, LAND1, STCD1-4, TXJCD, LEGALNAT, COMSIZE, TDT, CRTN, CNAE, SUFRAMA, LIFNR | Location, Party |
+| `KNA1` | STRAS, PSTLZ, ORT01, REGIO, LAND1, STCD1-4, TXJCD, LEGALNAT, COMSIZE, CRTN, SUFRAMA, KUNNR | Location, Party |
+| `T001W` | STRAS, PSTLZ, ORT01, REGIO, LAND1, COUNC, ADRNR, LIFNR | Location |
+| `J_1BBRANCH` | STATE_INSC, MUNIC_INSC, ICMSCONTRIBUTOR, ICMSSTCONTRIBUTOR, IPICONTRIBUTOR, PISCONTRIBUTOR, COFINSCONTRIBUTOR, ISSCONTRIBUTOR, LEGALNAT, TDT, CRTN, CNAE, SUFRAMA | Party |
+| `BUS_TB071` | TAX_CTY, TAX_TYPE (BR01-BR09), TAX_GROUP (0/1) | Party (contribuinte) |
+| `SADR` | TXJCD | Party (IBGECode) |
+| `ADRC` | STREET, POST_CODE1, CITY1, REGION, COUNTRY | Location (fallback) |
+| `LOGBR_CPOM_PLNT` | (CPOM por planta) | Party |
+| `LOGBR_CPOM_VNDR` | (CPOM por vendor) | Party |
+| `EKPO` | J_1BMATORG, J_1BMATUSE, EAN11 | Item, STO |
+| `J_1BNFTXCOND` | rate, value, base, basered1, excbas, othbas, whtcollcode, srate, qrate, qbase, taxtyp | Condition Mapping |
+| `TXS_COND_MAP` | (classe mapper customizada por condition + tax code) | Condition Mapping |
+| `TXSMAPEXTTOERP` | (mapeamento tax code externo -> SAP) | Response |
+
+---
+
+*Documento gerado a partir dos manuais individuais TXS. Todos os valores tecnicos verificados contra codigo-fonte em `incoming/`.*

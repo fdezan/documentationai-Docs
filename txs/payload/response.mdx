@@ -1,0 +1,585 @@
+---
+title: "TXS Response — Estruturas de Resposta"
+description: "Documento de referencia para consultores SAP — Estrutura completa da resposta do Tax Engine (TXS/TAAS)."
+---
+
+<Callout kind="info">
+**Documento de referencia para consultores SAP** — Estrutura completa da resposta do Tax Engine (TXS/TAAS).
+Todos os valores tecnicos foram verificados contra o codigo-fonte em `incoming/`.
+
+**Ultima atualizacao**: 2026-03-03
+</Callout>
+
+
+---
+
+## Visao Geral
+
+A **TXS Response** e a resposta retornada pelo motor externo de calculo de impostos (Tax Engine) apos processar o payload enviado pelo SAP S/4HANA Cloud. Ela contem os valores de impostos calculados, organizados hierarquicamente:
+
+```
+TXS_RESPONSE (raiz)
+  +-- tax_lines[] (TXS_TAX_LINE — um por item da transacao)
+  |     +-- tax_values[] (TXS_TAX_VALUE — um por tipo de imposto no item)
+  |           +-- tax_attributes[] (TXS_TAX_ATTRIBUTE — atributos fiscais: CST, CENQ, etc.)
+  +-- warning[] (TXS_TAX_WARNING — alertas do motor)
+```
+
+**Fluxo**: O payload e enviado via HTTP POST pela classe `CL_TXS_COMMUNICATION`. A resposta JSON e desserializada para a estrutura `TXS_RESPONSE` e armazenada no Response Buffer (`CL_TXS_RESPONSE_BUFFER`) para reutilizacao pelas demais condition types do pricing.
+
+---
+
+## 1. Estrutura: TXS_RESPONSE (Raiz da Resposta)
+
+**Fonte**: `incoming/txs_response.abap`
+
+Estrutura ABAP anotada com `@AbapCatalog.enhancement.category : #EXTENSIBLE_ANY`, permitindo extensoes via custom fields.
+
+| Campo | Tipo ABAP | Descricao | Uso no Mapeamento |
+|-------|-----------|-----------|-------------------|
+| `id` | `abap.string(0)` | Transaction ID — correlaciona com `TXS_PAYLOAD-id` enviado no request | Identificacao unica da transacao; armazenado no buffer como `trace_guid` |
+| `total` | `abap.string(0)` | Valor total a pagar/receber (incluindo impostos) | Mapeado para condition TAAS_TOTAL via `MAP_COND_TAAS_TOTAL` (KWERT = total, KBETR = 1000). Fonte: `cl_txs_conditions_mapper_br.abap:486-487` |
+| `inclusive` | `abap.string(0)` | Flag: imposto ja incluido no valor bruto (`true`/`false`) | Indica se o preco informado ja inclui impostos |
+| `sub_total` | `abap.string(0)` | Valor base antes dos impostos | Mapeado para condition TAAS_SUBTOTAL via `MAP_COND_TAAS_SUBTOTAL` (KWERT = sub_total, KBETR = total_tax). Fonte: `cl_txs_conditions_mapper_br.abap:484-485` |
+| `total_tax` | `abap.string(0)` | Soma total de impostos de todos os itens | Usado no mapeamento do TAAS_SUBTOTAL como KBETR |
+| `total_withholding_tax` | `abap.string(0)` | Total de impostos retidos na fonte (WHT) | Soma de IR, CSLL, PIS-WHT, COFINS-WHT, INSS-WHT |
+| `country` | `abap.string(0)` | Codigo do pais tributavel | Para Brasil: `BR` |
+| `date` | `abap.string(0)` | Timestamp da resposta (data/hora de calculo) | Armazenado no buffer; na geracao do hash, truncado para 10 caracteres (apenas data) |
+| `tax_lines` | `txs_tax_line_tty` | Tabela de linhas de imposto (uma por item da transacao) | Estrutura `TXS_TAX_LINE` — ver secao 2 |
+| `warning` | `txs_tax_warning_tty` | Tabela de alertas retornados pelo motor | Estrutura `TXS_TAX_WARNING` — ver secao 6 |
+
+**Observacoes**:
+- Todos os campos sao do tipo `abap.string(0)` (string dinamica), pois o JSON retornado pelo tax engine e flexivel. A conversao para tipos numericos ocorre nas classes de mapeamento.
+- O campo `id` retornado deve ser identico ao `id` enviado no payload, permitindo correlacao request-response.
+
+---
+
+## 2. Estrutura: TXS_TAX_LINE (Por Item)
+
+**Fonte**: `incoming/txs_tax_line.abap`
+
+Cada `tax_line` corresponde a um item do documento SAP (pedido de compra, ordem de venda, etc.). A correlacao com o item SAP e feita pelo campo `id`.
+
+| Campo | Tipo ABAP | Descricao | Uso no Mapeamento |
+|-------|-----------|-----------|-------------------|
+| `id` | `abap.string(0)` | Identificador unico do item — correlaciona com `TXS_ITEM-id` enviado no request | Usado como chave para localizar o tax_value correto no `CL_TXS_TAX_TYPES_VALUES_BR::BUILD` |
+| `total_tax` | `abap.string(0)` | Soma de todos os impostos calculados para este item | Valor consolidado; detalhes por imposto em `tax_values` |
+| `taxcode` | `abap.string(0)` | Codigo de imposto determinado pelo tax engine (codigo externo) | Mapeado para o tax code SAP (S4) via tabela `TXSMAPEXTTOERP`. Armazenado no buffer como `ext_tax_code` |
+| `total_rate` | `abap.string(0)` | Aliquota total combinada de todos os impostos do item | Soma das aliquotas individuais |
+| `total_withholding_tax` | `abap.string(0)` | Total de impostos retidos na fonte para este item | Soma de WHT taxes (PIS-WHT, COFINS-WHT, CSLL-WHT, IR-WHT, INSS-WHT) |
+| `total_withholding_tax_rate` | `abap.string(0)` | Aliquota total de retencao na fonte | Soma das aliquotas de WHT |
+| `withholding_tax_code` | `abap.string(0)` | Codigo de imposto retido na fonte | Codigo WHT determinado pelo engine |
+| `tax_values` | `txs_tax_value_tty` | Tabela de valores por tipo de imposto | Estrutura `TXS_TAX_VALUE` — ver secao 3 |
+
+**Importante**: O campo `taxcode` e o codigo externo do tax engine, **nao** o tax code SAP (MWSKZ). O mapeamento externo-para-SAP ocorre via tabela de configuracao `TXSMAPEXTTOERP`.
+
+---
+
+## 3. Estrutura: TXS_TAX_VALUE — A Mais Critica
+
+**Fonte**: `incoming/txs_tax_value.abap`
+
+Esta e a estrutura central da response. Cada `tax_value` representa um imposto individual calculado (ICMS, IPI, PIS, etc.) para um item especifico. E aqui que estao os valores que serao mapeados para as condition records do pricing SAP (KOMV).
+
+| Campo | Tipo ABAP | Descricao | Mapeamento para KOMV | Detalhe |
+|-------|-----------|-----------|---------------------|---------|
+| `level` | `abap.string(0)` | Nivel na hierarquia de impostos (para cenarios de imposto-sobre-imposto) | Uso interno no parse | Ex: IPI nivel 1, ICMS-ST nivel 2 (IPI entra na base do ICMS-ST) |
+| `tax_type_code` | `abap.string(0)` | Codigo que identifica o imposto (ICMS, IPI, PIS, etc.) | Chave de dispatch — determina qual metodo `BUILD_MM_*` / `BUILD_SD_*` sera chamado | Ver tabela completa na secao 4 |
+| `name` | `abap.string(0)` | Nome legivel do tipo de imposto | Nao mapeado | Apenas descritivo |
+| `rate` | `abap.string(0)` | Aliquota do imposto (%) | `KOMV-KBETR` = rate x 10 | Fator de conversao: `con_factor = 10`. Fonte: `if_logbr_ft_txs_constants.abap:73` |
+| `taxable` | `abap.string(0)` | Base de calculo (valor sobre o qual o imposto incide) | `KOMV-KAWRT` | Valor base para o calculo do imposto |
+| `exempted_base_percent` | `abap.string(0)` | Percentual da base isenta (reducao de base ICMS) | `KOMV-KBETR` = (100 - exempt%) x 10 | Usado em `MAP_COND_BASE_REDUCTION_RATE`. Fonte: `cl_txs_conditions_mapper_br.abap:466-467` |
+| `exempted_base_amount` | `abap.string(0)` | Valor da base isenta em moeda | `KOMV-KWERT` | Via `MAP_COND_EXCLUDED_BASE`. Fonte: `cl_txs_conditions_mapper_br.abap:468-469` |
+| `other_base_amount` | `abap.string(0)` | Outra base (pauta fiscal, valor de mercado) | `KOMV-KWERT` | Via `MAP_COND_OTHER_BASE`. Fonte: `cl_txs_conditions_mapper_br.abap:470-471` |
+| `value` | `abap.string(0)` | Valor calculado do imposto (incluindo parte nao dedutivel) | `KOMV-KWERT` | Via `MAP_COND_AMOUNT`. Fonte: `cl_txs_conditions_mapper_br.abap:462-463` |
+| `non_deductible_tax_rate` | `abap.string(0)` | Aliquota do imposto nao dedutivel (nao recuperavel) | Sem mapeamento direto | Usado na logica de credito fiscal |
+| `non_deductible_tax_amount` | `abap.string(0)` | Valor do imposto nao dedutivel | Sem mapeamento direto | Diferenca: value - deductible_tax_amount |
+| `deductible_tax_amount` | `abap.string(0)` | Valor do imposto dedutivel (credito fiscal) | Usado na logica `HAS_CREDIT` | `HAS_CREDIT` retorna `true` se `deductible_tax_amount` > 0 |
+| `tax_attributes` | `txs_tax_attribute_tty` | Tabela de atributos fiscais (CST, CENQ, etc.) | Ver secao 5 | Contem informacoes adicionais por tipo de imposto |
+| `jurisdiction` | `abap.string(0)` | Nome da jurisdicao fiscal | Nao mapeado diretamente | Ex: "Sao Paulo" |
+| `jurisdiction_code` | `abap.string(0)` | Codigo da jurisdicao fiscal (UF) | Mapeado via `CL_TXS_JURISDICTION_MAPPER` | Para BR: codigo do estado (SP, RJ, MG...) |
+| `due_category` | `abap.string(0)` | Categoria de recolhimento: `P` = payable (a pagar) | Constante: `DUE_CATEGORY_PAYABLE = 'P'`. Fonte: `if_txs_constants.abap:151` | Indica se o imposto e a recolher ou a recuperar |
+| `is_tax_deferred` | `abap.string(0)` | Flag: imposto diferido (`true`/`false`) | Tratado na logica de ICMS-DP | Diferimento parcial de ICMS |
+| `withholding_relevant` | `abap.string(0)` | Flag: imposto relevante para retencao na fonte | Determina se o tax_value participa do WHT | `true` para PIS-WHT, COFINS-WHT, CSLL-WHT, etc. |
+| `full_rate` | `abap.string(0)` | Aliquota original antes de reducoes | Sem mapeamento direto | Util para analise: rate = full_rate quando nao ha reducao |
+
+### Fatores de Conversao Response -> KOMV
+
+Verificados no codigo-fonte:
+
+| Constante | Valor | Uso | Fonte |
+|-----------|-------|-----|-------|
+| `con_factor` | **10** | rate x 10 -> KBETR | `if_logbr_ft_txs_constants.abap:73` |
+| `con_total_percentage` | **100** | Base reducao calculo | `if_logbr_ft_txs_constants.abap:74` |
+| `CON_TAAS_TOTAL_PERCENTAGE` | **1000** | KBETR do TAAS_TOTAL | `cl_txs_conditions_mapper_br.abap:147` |
+| `CON_PAUTA_FACTOR_RATE_4_DEC` | **100** | Rate 4 decimais | `cl_txs_conditions_mapper_br.abap:150` |
+| `CON_PAUTA_PRICING_UNIT` | **1** | KPEIN da pauta | `cl_txs_conditions_mapper_br.abap:149` |
+
+---
+
+## 4. Tax Type Codes BR — Tabela Completa
+
+**Fonte**: `if_txs_constants_br.abap:200-224` (constante `tax_type_code`)
+
+Estes sao os valores possiveis do campo `tax_type_code` dentro de `TXS_TAX_VALUE`. Cada valor identifica um imposto brasileiro e determina qual metodo de processamento sera chamado em `CL_TXS_TAX_TYPES_VALUES_BR`.
+
+### Impostos Estaduais (ICMS)
+
+| tax_type_code | Constante ABAP | Imposto | Descricao | Fonte (linha) |
+|---------------|----------------|---------|-----------|---------------|
+| **ICMS** | `icms` | ICMS | Imposto sobre Circulacao de Mercadorias e Servicos | `if_txs_constants_br.abap:201` |
+| **ICMS-ST** | `icms_st` | ICMS-ST | ICMS Substituicao Tributaria (antecipacao do imposto na cadeia) | `if_txs_constants_br.abap:202` |
+| **ICMS-FCP** | `icms_fcp` | ICMS-FCP | Fundo de Combate a Pobreza (adicional sobre ICMS) | `if_txs_constants_br.abap:203` |
+| **ICMS-ST-FCP** | `icms_st_fcp` | ICMS-ST-FCP | FCP sobre ICMS-ST | `if_txs_constants_br.abap:204` |
+| **ICMS-DP** | `icms_dp` | ICMS-DP | Diferimento Parcial de ICMS | `if_txs_constants_br.abap:205` |
+| **ICMS-OP** | `icms_op` | ICMS-OP | ICMS Offset/Complementar (operacoes especificas) | `if_txs_constants_br.abap:206` |
+| **ICMS-D-FCP** | `icms_d_fcp` | ICMS-D-FCP | FCP sobre ICMS Diferido | `if_txs_constants_br.abap:207` |
+| **ICMS-DIFAL** | `icms_difal` | ICMS-DIFAL | Diferencial de Aliquota (interestadual para consumo final) | `if_txs_constants_br.abap:208` |
+| **ICMS-DIFAL-FCP** | `icms_difal_fcp` | ICMS-DIFAL-FCP | FCP sobre ICMS-DIFAL | `if_txs_constants_br.abap:209` |
+
+### Impostos Federais
+
+| tax_type_code | Constante ABAP | Imposto | Descricao | Fonte (linha) |
+|---------------|----------------|---------|-----------|---------------|
+| **IPI** | `ipi` | IPI | Imposto sobre Produtos Industrializados | `if_txs_constants_br.abap:210` |
+| **PIS** | `pis` | PIS | Programa de Integracao Social | `if_txs_constants_br.abap:211` |
+| **PIS-WHT** | `pis_wht` | PIS Retencao | PIS retido na fonte | `if_txs_constants_br.abap:212` |
+| **COFINS** | `cofins` | COFINS | Contribuicao para Financiamento da Seguridade Social | `if_txs_constants_br.abap:213` |
+| **COFINS-WHT** | `cofins_wht` | COFINS Retencao | COFINS retido na fonte | `if_txs_constants_br.abap:214` |
+| **CSLL-WHT** | `csll_wht` | CSLL Retencao | Contribuicao Social sobre Lucro Liquido — retencao | `if_txs_constants_br.abap:219` |
+| **IR-WHT** | `ir_wht` | IRRF | Imposto de Renda Retido na Fonte | `if_txs_constants_br.abap:220` |
+| **IR-WHT-INVOICE** | `ir_wht_inv` | IRRF Invoice | IRRF calculado na invoice (faturamento) | `if_txs_constants_br.abap:221` |
+
+### Impostos Municipais (ISS)
+
+| tax_type_code | Constante ABAP | Imposto | Descricao | Fonte (linha) |
+|---------------|----------------|---------|-----------|---------------|
+| **ISS-PROV** | `iss_prov` | ISS Provedor | ISS devido pelo provedor do servico | `if_txs_constants_br.abap:215` |
+| **ISS-PROV-WHT** | `iss_prov_wht` | ISS Provedor Retencao | ISS retido pelo tomador (provedor) | `if_txs_constants_br.abap:216` |
+| **ISS-EXEC** | `iss_exec` | ISS Executor | ISS devido pelo executor do servico | `if_txs_constants_br.abap:217` |
+| **ISS-EXEC-WHT** | `iss_exec_wht` | ISS Executor Retencao | ISS retido na fonte (executor) | `if_txs_constants_br.abap:218` |
+
+### Impostos Previdenciarios
+
+| tax_type_code | Constante ABAP | Imposto | Descricao | Fonte (linha) |
+|---------------|----------------|---------|-----------|---------------|
+| **INSS-WHT** | `inss_wht` | INSS Retencao | INSS retido na fonte (servicos) | `if_txs_constants_br.abap:222` |
+| **INSS-CPRB** | `inss_cprb` | INSS CPRB | Contribuicao Previdenciaria sobre Receita Bruta (desoneracao da folha) | `if_txs_constants_br.abap:223` |
+
+### Dispatch por Tax Type Code
+
+A classe `CL_TXS_TAX_TYPES_VALUES_BR` faz o dispatch por `tax_type_code` para metodos especializados. O roteamento e feito via `cl_txs_internal_codes` (nao por comparacao direta de strings), permitindo flexibilidade na configuracao.
+
+**Metodos MM** (Compras — `build_mm_per_tax_value`, fonte: `cl_txs_tax_types_values_br.abap:844`):
+
+| tax_type_code | Metodo |
+|---------------|--------|
+| IPI | `BUILD_MM_IPI` |
+| PIS | `BUILD_MM_PIS` |
+| PIS-WHT | `BUILD_MM_PIS_WHT` |
+| COFINS | `BUILD_MM_COFINS` |
+| COFINS-WHT | `BUILD_MM_COFINS_WHT` |
+| ICMS, ICMS-ST, ICMS-FCP, ICMS-ST-FCP, ICMS-DIFAL, ICMS-DIFAL-FCP, ICMS-FTZ | `BUILD_MM_ICMS` |
+| CSLL-WHT | `BUILD_MM_CSLL` |
+| IR-WHT | `BUILD_MM_IR` |
+| IR-WHT-INVOICE | `BUILD_MM_IR_WHT_INVOICE` |
+| INSS-WHT | `BUILD_MM_INSS_WHT` |
+| II | `BUILD_MM_II` |
+| ISS-PROV, ISS-EXEC, ISS-PROV-WHT, ISS-EXEC-WHT | `BUILD_ISS` |
+
+**Metodos SD** (Vendas — `build_sd_per_tax_value`, fonte: `cl_txs_tax_types_values_br.abap:1346`):
+
+| tax_type_code | Metodo |
+|---------------|--------|
+| ICMS, ICMS-ST, ICMS-FCP, ICMS-ST-FCP, ICMS-DP, ICMS-OP, ICMS-FTZ | `BUILD_SD_ICMS` |
+| IPI | `BUILD_SD_IPI` |
+| PIS | `BUILD_SD_PIS` |
+| PIS-WHT | `BUILD_SD_PIS_WHT` |
+| COFINS | `BUILD_SD_COFINS` |
+| COFINS-WHT | `BUILD_SD_COFINS_WHT` |
+| CSLL-WHT | `BUILD_SD_CSLL` |
+| IR-WHT | `BUILD_SD_IR` |
+| IR-WHT-INVOICE | `BUILD_SD_IR_WHT_INVOICE` |
+| INSS-WHT | `BUILD_SD_INSS_WHT` |
+| INSS-CPRB | `BUILD_SD_INSS_CPRB` |
+| ISS-PROV, ISS-EXEC, ISS-PROV-WHT, ISS-EXEC-WHT | `BUILD_ISS` |
+
+---
+
+## 5. Estrutura: TXS_TAX_ATTRIBUTE
+
+**Fonte**: `incoming/txs_tax_attribute.abap`
+
+Estrutura de par chave-valor usada para transportar atributos fiscais adicionais por tipo de imposto. Cada `tax_value` pode ter multiplos `tax_attributes`.
+
+| Campo | Tipo ABAP | Descricao |
+|-------|-----------|-----------|
+| `attribute_type` | `abap.string(0)` | Tipo/chave do atributo (ex: `CST`, `CENQ`, `surchargeRate`) |
+| `attribute_value` | `abap.string(0)` | Valor do atributo (ex: `00`, `999`, `3.5`) |
+
+### Attribute Types BR — Tabela Completa
+
+Os valores de `attribute_type` sao mapeados via `CL_TXS_INTERNAL_CODES` (tabela `api_tax_attributes_type`). Os valores "legado" (deprecated) estao na classe `CL_TXS_TAX_ATTRIBUTES_BR` (constante `con_attribute_type`).
+
+#### Atributos Configurados via Internal Codes
+
+**Fonte**: `cl_txs_internal_codes.abap:154-181` (constante `api_tax_attributes_type`)
+
+| Internal Code | Valor attribute_type (JSON) | Significado | Classe Extratora | Fonte (linha) |
+|---------------|----------------------------|-------------|------------------|---------------|
+| `cenq` | `CENQ` | Codigo de Enquadramento IPI | `IF_TXS_TAX_ATTRIBUTES_BR::get_cenq()` | `:155` |
+| `collection_code` | `collectionCode` | Codigo de arrecadacao (GNRE/DARF para ICMS-ST) | `IF_TXS_TAX_ATTRIBUTES_BR::get_collection_code()` -> `IF_TXS_RESPONSE_BR::get_collection_code()` | `:156` |
+| `cst` | `CST` | Codigo de Situacao Tributaria | `IF_TXS_TAX_ATTRIBUTES_BR::get_cst()` | `:157` |
+| `cst_mun` | `CST-MUN_TAXSIT` | CST Municipal (ISS) | `IF_TXS_TAX_ATTRIBUTES_BR::get_cst_mun()` | `:158` |
+| `legal_provision` | `legalProvision` | Provisao legal (fundamentacao juridica) | `IF_TXS_TAX_ATTRIBUTES_BR::get_legal_provision(i_index)` | `:159` |
+| `mot_des_icms` | *(via internal codes)* | Motivo de desoneracao ICMS | *(via internal codes)* | `:160` |
+| `pauta_quantity` | `pautaQuantity` | Quantidade para calculo por pauta fiscal | `IF_TXS_TAX_ATTRIBUTES_BR::get_pauta_quantity()` -> `IF_TXS_RESPONSE_BR::get_pauta_quantity()` | `:161` |
+| `pauta_unit` | `pautaUnit` | Unidade de medida da pauta fiscal | `IF_TXS_TAX_ATTRIBUTES_BR::get_pauta_unit()` | `:162` |
+| `surcharge_rate` | `surchargeRate` | MVA (Margem de Valor Agregado) / sobretaxa ICMS-ST | `IF_TXS_TAX_ATTRIBUTES_BR::get_surcharge_rate()` -> `IF_TXS_RESPONSE_BR::get_surcharge_rate()` | `:163` |
+| `base_determination` | `baseDetermination` | Modalidade de determinacao de base | `IF_TXS_TAX_ATTRIBUTES_BR::get_base_determination()` | `:164` |
+| `legal_pcode` | `legalPCode` | Codigo da provisao legal | `IF_TXS_TAX_ATTRIBUTES_BR::get_legal_provision_code(i_index)` | `:165` |
+| `pis_cofins_exclusion` | *(via internal codes)* | Exclusao PIS/COFINS da base | *(via internal codes)* | `:166` |
+| `cbenef` | *(via internal codes)* | Codigo de beneficio fiscal (NF-e) | *(via internal codes)* | `:167` |
+| `cclas_trib` | *(via internal codes)* | Classificacao tributaria | `IF_TXS_TAX_ATTRIBUTES_BR::get_cclas_trib()` | `:168` |
+| `deferral_percentage` | *(via internal codes)* | Percentual de diferimento ICMS | `IF_TXS_TAX_ATTRIBUTES_BR::get_deferral_percentage()` | `:169` |
+| `deferral_amount` | *(via internal codes)* | Valor diferido ICMS | `IF_TXS_TAX_ATTRIBUTES_BR::get_deferral_amount()` | `:170` |
+| `reduction_percentage` | *(via internal codes)* | Percentual de reducao de base | `IF_TXS_TAX_ATTRIBUTES_BR::get_reduction_percentage()` | `:171` |
+| `tax_refund_amount` | *(via internal codes)* | Valor de ressarcimento de imposto | `IF_TXS_TAX_ATTRIBUTES_BR::get_tax_refund_amount()` | `:172` |
+| `gov_reduct_percentage` | *(via internal codes)* | Percentual de reducao governamental | `IF_TXS_TAX_ATTRIBUTES_BR::get_gov_reduct_percentage()` | `:173` |
+| `regular_cst` | *(via internal codes)* | CST regular (antes de beneficio) | `IF_TXS_TAX_ATTRIBUTES_BR::get_regular_cst()` | `:174` |
+| `regular_cclass_trib` | *(via internal codes)* | Classificacao tributaria regular | `IF_TXS_TAX_ATTRIBUTES_BR::get_regular_cclas_trib()` | `:175` |
+| `regular_rate` | *(via internal codes)* | Aliquota regular (antes de beneficio) | `IF_TXS_TAX_ATTRIBUTES_BR::get_regular_rate()` | `:176` |
+| `regular_amount` | *(via internal codes)* | Valor regular (antes de beneficio) | `IF_TXS_TAX_ATTRIBUTES_BR::get_regular_amount()` | `:177` |
+| `gov_entity_type_code` | *(via internal codes)* | Tipo de entidade governamental | `IF_TXS_TAX_ATTRIBUTES_BR::get_gov_entity_type_code()` | `:178` |
+| `gov_pur_amount` | *(via internal codes)* | Valor de compra governamental | `IF_TXS_TAX_ATTRIBUTES_BR::get_gov_procurement_amount()` | `:179` |
+| `gov_pur_rate` | *(via internal codes)* | Aliquota de compra governamental | `IF_TXS_TAX_ATTRIBUTES_BR::get_gov_procurement_rate()` | `:180` |
+
+#### Valores Legado (Deprecated — cl_txs_tax_attributes_br.abap)
+
+**Fonte**: `cl_txs_tax_attributes_br.abap:12-28` (constante `con_attribute_type`, marcada como DEPRECATED)
+
+Estes sao os valores originais de `attribute_type` no JSON. O sistema atual utiliza `CL_TXS_INTERNAL_CODES` para resolver os valores dinamicamente, mas os valores legado ainda servem como referencia do que aparece no JSON:
+
+| Constante | Valor no JSON | Descricao |
+|-----------|---------------|-----------|
+| `cenq` | `CENQ` | Enquadramento IPI |
+| `collection_code` | `collectionCode` | Codigo de arrecadacao |
+| `csa` | `CSA` | CST alternativo |
+| `cst` | `CST` | Codigo de Situacao Tributaria |
+| `cst_mun` | `CST-MUN_TAXSIT` | CST Municipal |
+| `legal_provision` | `legalProvision` | Provisao legal |
+| `nbs_code` | `NBSCode` | Codigo NBS (Nomenclatura Brasileira de Servicos) |
+| `pauta_quantity` | `pautaQuantity` | Quantidade pauta |
+| `pauta_unit` | `pautaUnit` | Unidade pauta |
+| `surcharge_rate` | `surchargeRate` | MVA/sobretaxa |
+| `tax_relevant_location` | `taxRelevantLocation` | Local tributavel |
+| `base_determination` | `baseDetermination` | Determinacao de base |
+| `legalPCode` | `legalPCode` | Codigo legal |
+
+#### Uso Tipico por Imposto
+
+| Imposto | Atributos Tipicos | Uso |
+|---------|-------------------|-----|
+| ICMS | `CST`, `baseDetermination`, `legalProvision`, `legalPCode` | CST determina regime tributario; baseDetermination informa como a base foi calculada |
+| ICMS-ST | `CST`, `surchargeRate`, `collectionCode` | surchargeRate = MVA; collectionCode = codigo GNRE para recolhimento |
+| ICMS-DP | `CST`, `deferral_percentage`, `deferral_amount` | Percentual e valor do diferimento |
+| IPI | `CST`, `CENQ` | CENQ = codigo de enquadramento do IPI (ex: 999 = outros) |
+| PIS | `CST` | CST PIS (ex: 50, 70, 73, 98, 99) |
+| COFINS | `CST` | CST COFINS (mesma logica do PIS) |
+| ISS | `CST-MUN_TAXSIT` | CST Municipal especifico de ISS |
+
+---
+
+## 6. Estrutura: TXS_TAX_WARNING
+
+**Fonte**: `incoming/txs_tax_warning.abap`
+
+Alertas retornados pelo tax engine. Nao impedem o calculo, mas indicam situacoes que merecem atencao do consultor.
+
+| Campo | Tipo ABAP | Descricao |
+|-------|-----------|-----------|
+| `code` | `abap.string(0)` | Codigo do alerta (definido pelo tax engine) |
+| `description` | `abap.string(0)` | Descricao textual do alerta |
+
+**Exemplos de uso**: O tax engine pode retornar warnings quando uma aliquota nao esta configurada para uma combinacao especifica, ou quando utiliza um fallback de calculo.
+
+---
+
+## 7. Processamento da Response
+
+### 7.1 Fluxo Completo
+
+O processamento da response segue estas etapas:
+
+```
+1. HTTP POST (payload JSON) ---> Tax Engine
+2. Tax Engine processa e retorna JSON
+3. CL_TXS_COMMUNICATION::FETCH_RESPONSE
+   |-- Verifica HTTP status (200 = OK)
+   |-- Desserializa JSON -> TXS_RESPONSE
+   |-- Cria instancia CL_TXS_RESPONSE
+4. CL_TXS_RESPONSE_BUFFER::ADD_RESPONSE
+   |-- Calcula SHA1 hash do payload (sem id/time)
+   |-- Armazena response no buffer (singleton)
+5. CL_TXS_TAX_TYPES_VALUES_BR::BUILD
+   |-- Para cada tax_line -> para cada tax_value:
+   |     Dispatch por tax_type_code -> BUILD_MM_* ou BUILD_SD_*
+   |-- Preenche tabela interna de tax types mapeados
+6. CL_TXS_CONDITIONS_MAPPER_BR::MAP_TAX_TYPE_TO_CONDITION
+   |-- Para cada condition type na J_1BNFTXCOND:
+   |     Mapeia tax_value -> KOMV (pricing condition record)
+```
+
+### 7.2 Desserializacao
+
+**Classe**: `CL_TXS_COMMUNICATION`
+**Metodo**: `FETCH_RESPONSE` (fonte: `cl_txs_communication.abap:211`)
+
+```abap
+method FETCH_RESPONSE.
+  data(lv_http_status) = client->get_status( ).
+  data(lr_response_entity) = client->get_response_entity( ).
+
+  if lv_http_status = con_http_status_ok.
+    " 1. camelCase -> snake_case
+    data(json_string) = json_tool->rename_properties_to_field(
+      lr_response_entity->get_string_data( ) ).
+
+    " 2. Desserializa e cria instancia
+    response = cl_txs_response=>get_instance(
+      i_country         = country
+      i_response_json   = json_string
+      i_payload         = payload->get_payload( )
+      i_pricing_context = pricing_context ).
+  else.
+    " Erro HTTP -> exception CX_TXS_EXCEPTION
+    raise exception type cx_txs_exception ...
+  endif.
+endmethod.
+```
+
+**Conversao JSON**: O metodo `CL_TXS_JSON_SERIALIZER::RENAME_PROPERTIES_TO_FIELD` converte nomes de propriedades JSON de camelCase para snake_case (formato dos campos ABAP). Fonte: `cl_txs_json_serializer.abap:954`.
+
+**Desserializacao**: `CL_TXS_RESPONSE::DESERIALIZE_RESPONSE` usa `pretty_name = json_tool->pretty_mode-camel_case` para o parser. Fonte: `cl_txs_response.abap:124-137`.
+
+### 7.3 Parse por Tax Type
+
+**Classe**: `CL_TXS_TAX_TYPES_VALUES_BR`
+**Metodo principal**: `BUILD_MM_PER_TAX_VALUE` (MM) / `BUILD_SD_PER_TAX_VALUE` (SD)
+
+O dispatch e feito via `cl_txs_internal_codes=>get_instance( )->is_value_in_internal_code()`, comparando o `tax_type_code` retornado com os internal codes configurados. Isso permite que o mapeamento tax_type_code -> imposto seja configuravel, sem hardcoding de strings.
+
+Cada metodo `BUILD_MM_*` / `BUILD_SD_*` recebe:
+- `I_ID` (string): ID do item
+- `I_TAX` (TXS_TAX_VALUE): Valores do imposto
+- `I_ATTRIBUTES` (ref to IF_TXS_TAX_ATTRIBUTES): Acesso aos tax_attributes
+
+E chama `APPEND_TAX_TYPE` para adicionar a tax type mapeada na tabela interna.
+
+### 7.4 Response Buffer
+
+**Classe**: `CL_TXS_RESPONSE_BUFFER` (singleton)
+**Interface**: `IF_TXS_RESPONSE_BUFFER`
+**Fonte**: `incoming/cl_txs_response_buffer.abap`, `incoming/if_txs_response_buffer.abap`
+
+O buffer armazena responses para reutilizacao. A chamada HTTP ao tax engine ocorre apenas uma vez (na condition type **TXSC**). Todas as demais condition types do pricing procedure leem do buffer.
+
+#### Estrutura do Buffer
+
+**Fonte**: `if_txs_response_buffer.abap:6-23`
+
+| Campo | Tipo | Descricao |
+|-------|------|-----------|
+| `request_hash` | `string` | Hash SHA1 do payload serializado (chave primaria) |
+| `document_item_key` | `char16` | Chave do item do documento (chave primaria) |
+| `timestamp_service_call` | `timestampl` | Timestamp da chamada ao servico |
+| `timestamp_buffer_read` | `timestampl` | Timestamp da ultima leitura do buffer |
+| `date` | `string` | Data do request original |
+| `response` | `string` | JSON da response (string completa) |
+| `request` | `string` | JSON do request serializado |
+| `ext_tax_code` | `txs_ext_tax_code` | Tax code externo (do engine) |
+| `s4_tax_code` | `mwskz` | Tax code SAP (mapeado) |
+| `tax_date` | `prsdt` | Data fiscal |
+| `trace_guid` | `txs_guid` | GUID de rastreamento |
+| `document_item_id` | `txs_doc_item` | ID do item no documento |
+| `reference` | `char16` | Referencia do item |
+| `jurisdiction_code` | `txjcd` | Codigo de jurisdicao |
+| `kappl` | `kappl` | Aplicacao (TX = MM, V = SD) |
+| `pricing_context` | `ref to if_txs_pricing_context` | Referencia ao contexto de pricing |
+
+#### Calculo do Hash
+
+**Fonte**: `cl_txs_response_buffer.abap:70-97`
+
+O hash e calculado com SHA1 sobre o payload serializado, **removendo** o campo `id` e truncando `date` para 10 caracteres (somente data, sem hora). Isso garante que payloads identicos (mesmo item, mesmos dados fiscais) produzam o mesmo hash, mesmo em chamadas diferentes.
+
+```abap
+" Prepara payload para hash (remove volatilidade)
+clear ls_request-id.
+ls_request-date = ls_request-date(10).  " Apenas data
+
+" Serializa e calcula SHA1
+data(lv_payload_serialized) = serialize_request( ls_request ).
+r_hash = calculate_hash( lv_payload_serialized ).
+```
+
+#### Lookup por Invoice vs. Outros
+
+**Fonte**: `cl_txs_response_buffer.abap:285-291`
+
+Para documentos de invoice, a chave de busca no buffer inclui `document_item_id` (TAXPS). Para outros documentos, usa `document_item_key`:
+
+```abap
+IF cl_txs_business_transaction=>get_instance( )->is_invoice( ).
+  READ TABLE response_buffer WITH KEY
+    request_hash = lv_request_hash
+    document_item_id = i_pricing_context->get_item( )-taxps.
+ELSE.
+  READ TABLE response_buffer WITH KEY
+    request_hash = lv_request_hash
+    document_item_key = lv_doc_ref.
+ENDIF.
+```
+
+#### Feature Toggle
+
+**Fonte**: `cl_txs_controller.abap:203`
+
+O feature toggle `GLO_LOG_BR_EXT_JSON_RESP` (tipo `ftg_id`) controla o metodo de armazenamento da response no buffer. Quando ativo, utiliza o metodo `add_response()` do controller; quando inativo, utiliza o metodo padrao `IF_TXS_RESPONSE_BUFFER~ADD_RESPONSE`:
+
+```abap
+CONSTANTS ftg_br2_toggle_resconsp TYPE ftg_id VALUE 'GLO_LOG_BR_EXT_JSON_RESP'.
+IF cl_ftg_runtime_state=>is_on( ftg_br2_toggle_resconsp ).
+  add_response( ).
+ELSE.
+  lr_response_buffer->if_txs_response_buffer~add_response( ... ).
+ENDIF.
+```
+
+#### BAdI do Buffer
+
+O buffer suporta o BAdI `TXS_BADI_RESPONSE_BUFFER` com dois pontos de extensao:
+- `prepare_request_to_be_hashed`: Permite alterar o request antes do calculo do hash (fonte: `cl_txs_response_buffer.abap:121`)
+- `get_response`: Permite interceptar a leitura do buffer (fonte: `cl_txs_response_buffer.abap:374`)
+
+---
+
+## 8. Pontos de Debug
+
+Para investigar problemas na response do TXS, utilize breakpoints nas seguintes localizacoes:
+
+| # | Classe::Metodo | O que Observar | Fonte |
+|---|----------------|----------------|-------|
+| 1 | `CL_TXS_COMMUNICATION::FETCH_RESPONSE` | HTTP status (`lv_http_status`), JSON bruto da response | `cl_txs_communication.abap:211` |
+| 2 | `CL_TXS_RESPONSE::GET_INSTANCE` | Response desserializada, payload original | `cl_txs_response.abap:141` |
+| 3 | `CL_TXS_RESPONSE::DESERIALIZE_RESPONSE` | JSON apos rename (snake_case), estrutura resultante | `cl_txs_response.abap:124` |
+| 4 | `CL_TXS_TAX_TYPES_VALUES_BR::BUILD_MM_PER_TAX_VALUE` | Dispatch por tax_type_code para MM | `cl_txs_tax_types_values_br.abap:844` |
+| 5 | `CL_TXS_TAX_TYPES_VALUES_BR::BUILD_SD_PER_TAX_VALUE` | Dispatch por tax_type_code para SD | `cl_txs_tax_types_values_br.abap:1346` |
+| 6 | `CL_TXS_TAX_TYPES_VALUES_BR::BUILD_MM_ICMS` | Valores ICMS extraidos da response | `cl_txs_tax_types_values_br.abap` |
+| 7 | `CL_TXS_TAX_TYPES_VALUES_BR::BUILD_MM_IPI` | Valores IPI extraidos da response | `cl_txs_tax_types_values_br.abap` |
+| 8 | `CL_TXS_TAX_TYPES_VALUES_BR::BUILD_MM_PIS` | Valores PIS extraidos da response | `cl_txs_tax_types_values_br.abap` |
+| 9 | `CL_TXS_TAX_TYPES_VALUES_BR::BUILD_MM_COFINS` | Valores COFINS extraidos da response | `cl_txs_tax_types_values_br.abap` |
+| 10 | `CL_TXS_RESPONSE_BUFFER::IF_TXS_RESPONSE_BUFFER~GET_RESPONSE` | Busca no buffer: hash, lookup, response encontrada | `cl_txs_response_buffer.abap:366` |
+| 11 | `CL_TXS_RESPONSE_BUFFER::IF_TXS_RESPONSE_BUFFER~ADD_RESPONSE` | Armazenamento no buffer: hash, tax code, S4 mapping | `cl_txs_response_buffer.abap:248` |
+| 12 | `CL_TXS_RESPONSE_BUFFER::CALCULATE_REQUEST_HASH` | Hash calculado, payload limpo (sem id/time) | `cl_txs_response_buffer.abap:101` |
+| 13 | `CL_TXS_CONDITIONS_MAPPER_BR::MAP_TAX_TYPE_TO_CONDITION` | Mapeamento final tax_value -> KOMV | `cl_txs_conditions_mapper_br.abap:459` |
+
+### Dica de Debug — Sequencia Recomendada
+
+1. **Verificar a chamada HTTP**: Breakpoint em `FETCH_RESPONSE` para ver o status HTTP e o JSON bruto
+2. **Verificar desserializacao**: Breakpoint em `DESERIALIZE_RESPONSE` para ver se a estrutura foi populada corretamente
+3. **Verificar dispatch**: Breakpoint em `BUILD_MM_PER_TAX_VALUE` ou `BUILD_SD_PER_TAX_VALUE` para ver qual metodo sera chamado para cada tax_type_code
+4. **Verificar valores especificos**: Breakpoint no metodo `BUILD_MM_*` correspondente ao imposto com problema
+5. **Verificar mapeamento KOMV**: Breakpoint em `MAP_TAX_TYPE_TO_CONDITION` para ver os valores finais no pricing
+
+---
+
+## 9. Exemplo de Response JSON (Simplificado)
+
+```json
+{
+  "id": "abc123-uuid",
+  "total": "1180.00",
+  "inclusive": "false",
+  "subTotal": "1000.00",
+  "totalTax": "180.00",
+  "totalWithholdingTax": "0.00",
+  "country": "BR",
+  "date": "2026-03-03T10:30:00Z",
+  "taxLines": [
+    {
+      "id": "000010",
+      "totalTax": "180.00",
+      "taxcode": "01",
+      "totalRate": "18.00",
+      "totalWithholdingTax": "0.00",
+      "totalWithholdingTaxRate": "0.00",
+      "withholdingTaxCode": "",
+      "taxValues": [
+        {
+          "level": "1",
+          "taxTypeCode": "ICMS",
+          "name": "ICMS",
+          "rate": "18.00",
+          "taxable": "1000.00",
+          "exemptedBasePercent": "0.00",
+          "exemptedBaseAmount": "0.00",
+          "otherBaseAmount": "0.00",
+          "value": "180.00",
+          "nonDeductibleTaxRate": "0.00",
+          "nonDeductibleTaxAmount": "0.00",
+          "deductibleTaxAmount": "180.00",
+          "jurisdiction": "Sao Paulo",
+          "jurisdictionCode": "SP",
+          "dueCategory": "P",
+          "isTaxDeferred": "false",
+          "withholdingRelevant": "false",
+          "fullRate": "18.00",
+          "taxAttributes": [
+            {
+              "attributeType": "CST",
+              "attributeValue": "00"
+            },
+            {
+              "attributeType": "baseDetermination",
+              "attributeValue": "3"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "warning": []
+}
+```
+
+<Callout kind="info">
+**Nota**: O JSON usa camelCase (ex: `taxTypeCode`, `subTotal`). O metodo `RENAME_PROPERTIES_TO_FIELD` converte para snake_case (ex: `tax_type_code`, `sub_total`) antes da desserializacao para a estrutura ABAP.
+</Callout>
+
+
+---
+
+## Arquivos-Fonte Referenciados
+
+| Arquivo | Conteudo |
+|---------|----------|
+| `incoming/txs_response.abap` | Definicao da estrutura TXS_RESPONSE |
+| `incoming/txs_tax_line.abap` | Definicao da estrutura TXS_TAX_LINE |
+| `incoming/txs_tax_value.abap` | Definicao da estrutura TXS_TAX_VALUE |
+| `incoming/txs_tax_attribute.abap` | Definicao da estrutura TXS_TAX_ATTRIBUTE |
+| `incoming/txs_tax_warning.abap` | Definicao da estrutura TXS_TAX_WARNING |
+| `incoming/if_txs_constants.abap` | Constantes globais TXS (SERVICE_CALL, DUE_CATEGORY_PAYABLE) |
+| `incoming/if_txs_constants_br.abap` | Constantes BR (tax_type_code, operation_nature, tax_code) |
+| `incoming/if_txs_response_buffer.abap` | Interface do response buffer (response_buffer_str) |
+| `incoming/cl_txs_communication.abap` | Comunicacao HTTP (FETCH_RESPONSE, POST, BUILD) |
+| `incoming/cl_txs_response.abap` | Classe de response (GET_INSTANCE, DESERIALIZE_RESPONSE) |
+| `incoming/cl_txs_response_buffer.abap` | Buffer singleton (hash SHA1, ADD/GET_RESPONSE) |
+| `incoming/cl_txs_response_br.abap` | Response BR (get_collection_code, get_surcharge_rate, get_pauta_quantity) |
+| `incoming/cl_txs_tax_types_values_br.abap` | Parse por tax type (BUILD_MM_*, BUILD_SD_*) |
+| `incoming/cl_txs_tax_attributes_br.abap` | Extracao de tax attributes BR (get_cst, get_cenq, etc.) |
+| `incoming/cl_txs_internal_codes.abap` | Internal codes (api_tax_attributes_type, api_tax_type_code) |
+| `incoming/cl_txs_conditions_mapper_br.abap` | Mapeamento response -> KOMV (MAP_TAX_TYPE_TO_CONDITION) |
+| `incoming/cl_txs_json_serializer.abap` | Serializacao/desserializacao JSON (RENAME_PROPERTIES_TO_FIELD) |
+| `incoming/cl_txs_controller.abap` | Controller TXS (feature toggle GLO_LOG_BR_EXT_JSON_RESP) |
+| `reference/txs-verified-constants.md` | Constantes verificadas (fonte de verdade) |

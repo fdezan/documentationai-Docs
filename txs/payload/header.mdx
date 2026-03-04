@@ -1,0 +1,551 @@
+---
+title: "TXS Payload — Header (Estrutura Raiz)"
+description: "Documento de referencia para consultores SAP -- origem e debug de campos do header TXS"
+---
+
+<Callout kind="info">
+Documento de referencia para consultores SAP -- origem e debug de campos do header TXS
+</Callout>
+
+
+---
+
+## Visao Geral
+
+A estrutura raiz `TXS_PAYLOAD` contem os campos de header (nivel de documento) mais referencias a sub-estruturas de tabelas internas (`_items`, `_locations`, `_party`, `_bp_exemption_details`, `_extensions`). Este documento foca exclusivamente nos **campos escalares do header** -- como sao populados, de onde vem os dados e onde fazer debug.
+
+A classe base `CL_TXS_PAYLOAD` implementa a interface `IF_TXS_PAYLOAD` e constroi o payload completo. Para o Brasil, a classe `CL_TXS_PAYLOAD_BR` herda de `CL_TXS_PAYLOAD` e redefine metodos especificos: `BUILD_HEADER`, `GET_PAYLOAD_DATE`, `GET_GROSS_OR_NET`, `GET_OPERATION_NATURE_CODE` e `IS_GROSS_PRICE_ACTIVE`.
+
+**Fonte**: cl_txs_payload.abap:1-61, cl_txs_payload_br.abap:1-45
+
+---
+
+## Estrutura: TXS_PAYLOAD
+
+Definida em DDIC com annotation `@AbapCatalog.enhancement.category : #EXTENSIBLE_ANY` -- ou seja, extensivel via append structures.
+
+**Fonte**: txs_payload.abap:1-35
+
+| # | Campo | Tipo ABAP | Descricao (DDIC) | Builder (Classe::Metodo) | Fonte SAP (Tabela.Campo) | Debug Point (Classe::Metodo) |
+|---|-------|-----------|-------------------|--------------------------|--------------------------|------------------------------|
+| 1 | `id` | `abap.string(0)` | Document ID | `CL_TXS_PAYLOAD::BUILD_HEADER` via `dao->generate_payload_id()` | UUID gerado por `CL_SYSTEM_UUID=>CREATE_UUID_X16_STATIC()` | `CL_TXS_DAO::GENERATE_PAYLOAD_ID` (cl_txs_dao.abap:120) |
+| 2 | `company_id` | `abap.string(0)` | Company ID | `CL_TXS_PAYLOAD::BUILD_HEADER` via `pricing_context->get_header( )-bukrs` | `KOMK-BUKRS` | `CL_TXS_PAYLOAD::BUILD_HEADER` (cl_txs_payload.abap:109) |
+| 3 | `date` | `abap.string(0)` | Date of transaction (order date, invoice date, etc.) | `CL_TXS_PAYLOAD_BR::GET_PAYLOAD_DATE` (redefined) | Varia por cenario: `KOMK-FKDAT`, `KOMK-ERDAT`, `KOMK-PRSDT`, `SY-DATUM` | `CL_TXS_PAYLOAD_BR::GET_PAYLOAD_DATE` (cl_txs_payload_br.abap:257) |
+| 4 | `saleor_purchase` | `abap.string(0)` | Is transaction Sale or Purchase | `CL_TXS_PAYLOAD::GET_SALES_OR_PURCHASE` | Derivado de `KAPPL` via `pricing_context->get_application_for_payload()` | `CL_TXS_PAYLOAD::GET_SALES_OR_PURCHASE` (cl_txs_payload.abap:199) |
+| 5 | `gross_or_net` | `abap.string(0)` | Is transaction Gross or Net | `CL_TXS_PAYLOAD_BR::GET_GROSS_OR_NET` (redefined) | Logica BR: downpayment, invoice, gross_price_active | `CL_TXS_PAYLOAD_BR::GET_GROSS_OR_NET` (cl_txs_payload_br.abap:76) |
+| 6 | `currency` | `abap.string(0)` | Currency code (ISO 4217) | `CL_TXS_PAYLOAD::BUILD_HEADER` via `pricing_context->get_currency()` | `KOMK-WAERK` (cl_txs_pricing_context.abap:190-191) | `CL_TXS_PAYLOAD::BUILD_HEADER` (cl_txs_payload.abap:108) |
+| 7 | `operation_nature_code` | `abap.string(0)` | Identifies the operation nature | `CL_TXS_PAYLOAD_BR::GET_OPERATION_NATURE_CODE` (redefined) -- delega para `CL_TXS_OPERATION_NATURE_BR` | Derivado de doc type SD, tax code MM, movement type STO | `CL_TXS_PAYLOAD_BR::GET_OPERATION_NATURE_CODE` (cl_txs_payload_br.abap:101) |
+| 8 | `cash_discount_percent` | `abap.string(0)` | Discount Percentage Applicable | **Nao populado no standard** -- disponivel apenas via BAdI | -- | BAdI `BD_GSLOG_EXT_TAX_CALC_PAYLOAD::EXTEND_PAYLOAD` |
+| 9 | `business_partner_id` | `abap.string(0)` | Supplier or Customer ID | **Nao populado no standard** -- disponivel apenas via BAdI | -- | BAdI `BD_GSLOG_EXT_TAX_CALC_PAYLOAD::EXTEND_PAYLOAD` |
+| 10 | `is_transaction_in_tax_group` | `abap.string(0)` | Do parties belong to same tax reporting group | **Nao populado no standard** | -- | -- |
+| 11 | `is_comp_deferred_tax_enabled` | `abap.string(0)` | Indicate if company can defer tax due | **Nao populado no standard** | -- | -- |
+| 12 | `is_cash_discount_planned` | `abap.string(0)` | If cash discount is planned or realized | **Nao populado no standard** | -- | -- |
+| 13 | `_items` | `txs_item_tty` | Tabela de itens do payload | `CL_TXS_PAYLOAD::BUILD_ITEM` via `CL_TXS_ITEMS=>GET_INSTANCE` | Multiplas fontes (KOMP, etc.) | Ver documento de items |
+| 14 | `_locations` | `txs_location_tty` | Tabela de localizacoes | `CL_TXS_PAYLOAD::BUILD_LOCATIONS` via `CL_TXS_LOCATIONS=>GET_INSTANCE` | T001W, T005, KNA1, LFA1 | Ver documento de locations |
+| 15 | `_party` | `txs_party_tty` | Tabela de parceiros | `CL_TXS_PAYLOAD::BUILD_PARTY` via `CL_TXS_PARTY=>GET_INSTANCE` | KNA1, LFA1 | Ver documento de party |
+| 16 | `_bp_exemption_details` | `txs_bp_exemption_detail_tty` | Detalhes de isencao do BP | `CL_TXS_PAYLOAD::BUILD_BP_EXEMPTION` via `CL_TXS_BP_EXEMPTIONS=>GET_INSTANCE` | Dados de tax exemption | Ver documento de bp_exemption |
+| 17 | `_extensions` | `txs_extended_fields_tty` | Campos extendidos (BAdI) | Populado via BAdI `BD_GSLOG_EXT_TAX_CALC_PAYLOAD::EXTEND_PAYLOAD` | Definido pela implementacao do BAdI | `CL_TXS_PAYLOAD::APPLY_CUSTOM_LOGIC` (cl_txs_payload.abap:68) |
+
+---
+
+## Sequencia de Build
+
+O metodo `IF_TXS_PAYLOAD~BUILD` em `CL_TXS_PAYLOAD` (cl_txs_payload.abap:219-227) executa a construcao do payload na seguinte ordem:
+
+```
+1. INITIALIZE          → CLEAR payload (limpa todos os campos)
+2. BUILD_HEADER        → Popula campos escalares do header (id, date, saleor_purchase, gross_or_net, currency, company_id)
+                          BR: chama super->build_header() + adiciona operation_nature_code
+3. BUILD_ITEM          → Constroi tabela _items via CL_TXS_ITEMS=>GET_INSTANCE
+4. BUILD_LOCATIONS     → Constroi tabela _locations via CL_TXS_LOCATIONS=>GET_INSTANCE
+5. BUILD_PARTY         → Constroi tabela _party via CL_TXS_PARTY=>GET_INSTANCE
+6. BUILD_BP_EXEMPTION  → Constroi tabela _bp_exemption_details via CL_TXS_BP_EXEMPTIONS=>GET_INSTANCE
+7. APPLY_CUSTOM_LOGIC  → Executa BAdI BD_GSLOG_EXT_TAX_CALC_PAYLOAD::EXTEND_PAYLOAD
+                          (pode modificar QUALQUER campo do payload, incluindo header e items)
+```
+
+**Fonte**: cl_txs_payload.abap:219-227
+
+### Build Header -- Classe Base vs. Brasil
+
+A classe base `CL_TXS_PAYLOAD::BUILD_HEADER` (cl_txs_payload.abap:103-111) popula:
+
+```abap
+payload-id              = dao->generate_payload_id( ).
+payload-date            = get_payload_date( ).
+payload-saleor_purchase = get_sales_or_purchase( ).
+payload-gross_or_net    = get_gross_or_net( ).
+payload-currency        = pricing_context->get_currency( ).
+payload-company_id      = pricing_context->get_header( )-bukrs.
+```
+
+A classe Brasil `CL_TXS_PAYLOAD_BR::BUILD_HEADER` (cl_txs_payload_br.abap:52-57) estende:
+
+```abap
+super->build_header( ).
+payload-operation_nature_code = get_operation_nature_code( ).
+```
+
+---
+
+## Logica Detalhada dos Campos Header
+
+### Campo: `id`
+
+- **Classe**: `CL_TXS_PAYLOAD::BUILD_HEADER` (cl_txs_payload.abap:104)
+- **Metodo de geracao**: `dao->generate_payload_id()` que chama `CL_SYSTEM_UUID=>CREATE_UUID_X16_STATIC()` (cl_txs_dao.abap:120-124)
+- **Tipo**: UUID hexadecimal de 16 bytes (32 caracteres)
+- **Observacao**: Gerado a cada chamada do TXS. Nao reutilizado entre chamadas.
+
+---
+
+### Campo: `company_id`
+
+- **Classe**: `CL_TXS_PAYLOAD::BUILD_HEADER` (cl_txs_payload.abap:109)
+- **Fonte SAP**: `pricing_context->get_header( )-bukrs` que mapeia para `KOMK-BUKRS`
+- **Significado**: Codigo da empresa (company code) do documento
+- **Valor no pricing context**: `cl_txs_pricing_context::get_currency` le de `pricing_header-waerk` (cl_txs_pricing_context.abap:190-191), e analogamente `company_id` vem de `pricing_header-bukrs`
+
+---
+
+### Campo: `date`
+
+- **Classe**: `CL_TXS_PAYLOAD_BR::GET_PAYLOAD_DATE` (redefined) -- cl_txs_payload_br.abap:257-325
+- **Formato**: ISO 8601 com precisao de milissegundos: `YYYY-MM-DDTHH:MM:SS.000Z`
+- **Fuso horario**: Converte para o timezone da planta via `CL_TXS_FM_DATE_TIME=>GET_INSTANCE( )->GET_LOCATION_TIMEZONE` usando pais (`land1`), regiao (`regio`) e CEP (`pstlz`) da planta. Se nao encontrar, usa `SY-ZONLO`.
+
+**Arvore de decisao (Brasil)**:
+
+```
+1. Aplicacao = SD (KAPPL = 'V')?
+   |
+   +-- E billing doc transfer (document_type in accounting_doc_type-billing_doc_transfer)?
+   |     → date = KOMK-FKDAT (billing date)
+   |
+   +-- E stock transfer (STO)?
+   |     → KOMK-FKDAT se preenchido, senao KOMK-ERDAT (creation date)
+   |
+   +-- Outros SD
+         → date = KOMK-PRSDT (pricing date)
+
+2. Stock transfer para MM (STO via MM, nao SD)?
+   → date = KOMK-PRSDT (pricing date)
+
+3. Default (outros MM)
+   → super->get_payload_date()
+   → pricing_context->get_date() (= SY-DATUM) + pricing_context->get_local_time() (= SY-TIMLO)
+   → Formato: YYYY-MM-DDTHH:MM:SS.000Z no timezone do sistema
+```
+
+**Detalhe de conversao de timezone** (cl_txs_payload_br.abap:312-322):
+
+Nos cenarios 1 e 2, apos determinar `lv_new_date`, o codigo converte o horario do sistema (`SY-TIMLO`) para o timezone da planta:
+
+```abap
+CONVERT DATE lv_new_date TIME sy-timlo INTO TIME STAMP lv_timestamp TIME ZONE sy-zonlo.
+CONVERT TIME STAMP lv_timestamp TIME ZONE lv_plant_timezone INTO DATE lv_date_plant TIME lv_time_plant.
+```
+
+A data final usa `lv_new_date` (nao `lv_date_plant`) porque apenas o horario deve ser ajustado, nao a data.
+
+**Fonte**: cl_txs_payload_br.abap:257-325, cl_txs_payload.abap:185-196
+
+---
+
+### Campo: `saleor_purchase`
+
+- **Classe**: `CL_TXS_PAYLOAD::GET_SALES_OR_PURCHASE` (cl_txs_payload.abap:199-211)
+- **Nao redefinido** pelo Brasil -- usa a implementacao da classe base
+
+**Logica**:
+
+```
+pricing_context->get_application_for_payload() retorna KAPPL:
+  |
+  +-- 'V' (application-sales_and_distribution) → internal_code API_SALE
+  |     → cl_txs_internal_codes=>api_sale_or_purchase-sale
+  |     → Valor: conforme tabela de internal codes (tipicamente 'sale')
+  |
+  +-- 'TX' (application-taxes) → internal_code API_PURCHASE
+        → cl_txs_internal_codes=>api_sale_or_purchase-purchase
+        → Valor: conforme tabela de internal codes (tipicamente 'purchase')
+```
+
+**Constantes de referencia**:
+- `if_txs_constants=>application-sales_and_distribution` = `'V'` (Fonte: if_txs_constants.abap:8)
+- `if_txs_constants=>application-taxes` = `'TX'` (Fonte: if_txs_constants.abap:7)
+- `cl_txs_internal_codes=>api_sale_or_purchase-sale` = `'API_SALE'` (Fonte: cl_txs_internal_codes.abap:200)
+- `cl_txs_internal_codes=>api_sale_or_purchase-purchase` = `'API_PURCHASE'` (Fonte: cl_txs_internal_codes.abap:201)
+
+**Observacao**: O valor final enviado na API depende da tabela de internal codes (`TXS_INT_CODES`), onde o internal code `API_SALE` e mapeado para um valor textual (ex: `'sale'`). O metodo `get_single_internal_code_value()` faz essa resolucao.
+
+---
+
+### Campo: `gross_or_net` (Redefinicao BR)
+
+- **Classe**: `CL_TXS_PAYLOAD_BR::GET_GROSS_OR_NET` (cl_txs_payload_br.abap:76-98)
+- **Redefinido no Brasil** -- a classe base simplesmente retorna `'net'` via internal codes
+
+**Arvore de decisao (Brasil)**:
+
+```
+1. E transacao de downpayment? (pricing_context->is_downpayment_transaction())
+   OU e accounts receivable? (logbr_down_payt_scen_valdtr->is_accounts_receivable())
+   OU e customer down payment? (logbr_down_payt_scen_valdtr->is_customer_down_payment())
+   |
+   +-- SIM → 'gross' (via internal_code API_GROSS)
+   |
+   +-- NAO → continua...
+
+2. Gross price ativo? (is_gross_price_active())
+   E aplicacao = TX (MM)? (application-taxes)
+   E NAO e invoice? (is_invoice_transaction() = false)
+   |
+   +-- SIM (todas as 3 condicoes) → 'gross' (via internal_code API_GROSS)
+   |
+   +-- NAO → 'net' (via internal_code API_NET)
+```
+
+**Metodo `IS_GROSS_PRICE_ACTIVE`** (cl_txs_payload_br.abap:357-366):
+- Obtem o tipo de material via `pricing_context->get_material_type()`
+- Converte para product type via `CL_TXS_LOGBR_MAT_TYPES_DA_ADPT`
+- Verifica se gross price esta ativo para o par (product_type, tax_code) via `CL_TXS_LOGBR_GRS_PRC_ACT_ADPTR=>GET_INSTANCE( )->IS_ACTIVE_BY_ITEM_LINE`
+
+**Constantes de referencia**:
+- `cl_txs_internal_codes=>api_gross_or_net-gross` = `'API_GROSS'` (Fonte: cl_txs_internal_codes.abap:205)
+- `cl_txs_internal_codes=>api_gross_or_net-net` = `'API_NET'` (Fonte: cl_txs_internal_codes.abap:206)
+- `if_txs_constants=>application-taxes` = `'TX'` (Fonte: if_txs_constants.abap:7)
+
+**Classe base** (cl_txs_payload.abap:161-168): Sempre retorna `'net'` via internal code `API_NET`, sem nenhuma logica condicional.
+
+---
+
+### Campo: `operation_nature_code` (BR-only)
+
+- **Classe**: `CL_TXS_PAYLOAD_BR::GET_OPERATION_NATURE_CODE` (cl_txs_payload_br.abap:101-119)
+- **Delega para**: `CL_TXS_OPERATION_NATURE_BR=>GET_INSTANCE()` (Singleton)
+- **Classe base**: Metodo vazio -- `operation_nature_code` so e populado para Brasil (cl_txs_payload.abap:181-182)
+
+**Roteamento por cenario**:
+
+```
+pricing_context->is_stock_transfer()?
+  |
+  +-- SIM → CL_TXS_OPERATION_NATURE_BR::GET_OPERATION_NATURE_CODE_STO
+  |
+  +-- NAO →
+        pricing_context->get_application_for_payload()
+        |
+        +-- 'V' (SD) → CL_TXS_OPERATION_NATURE_BR::GET_OPERATION_NATURE_CODE_SD
+        |
+        +-- 'TX' (MM) → CL_TXS_OPERATION_NATURE_BR::GET_OPERATION_NATURE_CODE_MM
+```
+
+**Fonte**: cl_txs_payload_br.abap:101-119
+
+#### Valores de Operation Nature (if_txs_constants_br::operation_nature)
+
+Valores da constante `if_txs_constants_br=>operation_nature` (Fonte: if_txs_constants_br.abap:122-148):
+
+| Constante | Valor | Descricao |
+|-----------|-------|-----------|
+| `purchase` | `'P'` | Compra padrao |
+| `purchase_invoice` | `'PI'` | Invoice de compra (MIRO) |
+| `sale` | `'S'` | Venda padrao |
+| `sale_invoice` | `'SI'` | Fatura de venda (billing doc transfer) |
+| `consignment_invoice` | `'CI'` | Invoice de consignacao |
+| `consignment_shipping` | `'CS'` | Remessa de consignacao |
+| `consignment_return_of_goods` | `'CRG'` | Retorno de consignacao |
+| `credit_memo_req` | `'CM'` | Solicitacao de nota de credito |
+| `debit_memo_req` | `'DM'` | Solicitacao de nota de debito |
+| `future_delivery_invoice` | `'FI'` | Fatura de entrega futura |
+| `future_delivery_shipping` | `'FS'` | Remessa de entrega futura |
+| `return_with_own_nf` | `'RO'` | Devolucao com NF propria |
+| `return_with_customer_nf` | `'RC'` | Devolucao com NF do cliente |
+| `returnable_packaging` | `'RP'` | Embalagem retornavel |
+| `returns_to_vendor` | `'RV'` | Devolucao ao fornecedor (credit memo MM) |
+| `subsequent_debit` | `'SD'` | Debito subsequente (subsequent debit MM) |
+| `third_party_shipment` | `'TPS'` | Remessa de terceiro |
+| `third_party_invoice` | `'TPI'` | Fatura de terceiro |
+| `subcontr_goods_issue` | `'GI'` | Saida de mercadoria para subcontratacao (mvt 541) |
+| `subcontr_goods_receipt` | `'GR'` | Recebimento de subcontratacao (mvt 542) |
+| `subcontr_goods_rcpt_symbolic` | `'GRS'` | Recebimento simbolico de subcontratacao (mvt 543) |
+| `stock_transfer_outgoing` | `'STO'` | Transferencia de estoque -- saida |
+| `stock_transfer_incoming` | `'STI'` | Transferencia de estoque -- entrada |
+| `stock_transfer_return_outgoing` | `'SRO'` | Retorno de STO -- saida |
+| `stock_transfer_return_incoming` | `'SRI'` | Retorno de STO -- entrada |
+
+#### Internal Codes de Operation Nature (cl_txs_internal_codes)
+
+No codigo atual, a determinacao usa internal codes ao inves dos valores hardcoded. Os internal codes de operation nature (Fonte: cl_txs_internal_codes.abap:308-338):
+
+| Internal Code | Valor da Constante |
+|---------------|-------------------|
+| `consignment_invoice` | `'API_OPERATION_NATURE_CONSIGNMENT_INVOICE'` |
+| `credit_memo` | `'API_OPERATION_NATURE_CREDIT_MEMO'` |
+| `consignment_shipment` | `'API_OPERATION_NATURE_CONSIGNMENT_SHIPMENT'` |
+| `consignment_return_of_goods` | `'API_OPERATION_NATURE_CONSIGNMENT_RETURN_OF_GOODS'` |
+| `debit_memo` | `'API_OPERATION_NATURE_DEBIT_MEMO'` |
+| `future_delivery_invoice` | `'API_OPERATION_NATURE_FUTURE_DELIVERY_INVOICE'` |
+| `future_delivery_shipment` | `'API_OPERATION_NATURE_FUTURE_DELIVERY_SHIPMENT'` |
+| `purchase` | `'API_OPERATION_NATURE_PURCHASE'` |
+| `purchase_invoice` | `'API_OPERATION_NATURE_PURCHASE_INVOICE'` |
+| `return_with_own_nf` | `'API_OPERATION_NATURE_RETURN_WITH_OWN_NF'` |
+| `return_with_customer_nf` | `'API_OPERATION_NATURE_RETURN_WITH_CUSTOMER_NF'` |
+| `returnable_packaging` | `'API_OPERATION_NATURE_RETURNABLE_PACKAGING'` |
+| `return_to_vendor` | `'API_OPERATION_NATURE_RETURN_TO_VENDOR'` |
+| `sale` | `'API_OPERATION_NATURE_SALE'` |
+| `sale_invoice` | `'API_OPERATION_NATURE_SALE_INVOICE'` |
+| `subsequent_debit` | `'API_OPERATION_NATURE_SUBSEQUENT_DEBIT'` |
+| `third_party_shipment` | `'API_OPERATION_NATURE_THIRD_PARTY_SHIPMENT'` |
+| `third_party_invoice` | `'API_OPERATION_NATURE_THIRD_PARTY_INVOICE'` |
+| `goods_issue` | `'API_OPERATION_NATURE_GOODS_ISSUE'` |
+| `goods_receipt_symbolic` | `'API_OPERATION_NATURE_GOODS_RECEIPT_SYMBOLIC'` |
+| `goods_receipt` | `'API_OPERATION_NATURE_GOODS_RECEIPT'` |
+| `stock_transfer_outgoing` | `'API_OPERATION_NATURE_STOCK_TRANSFER_OUTGOING'` |
+| `stock_transfer_incoming` | `'API_OPERATION_NATURE_STOCK_TRANSFER_INCOMING'` |
+| `stock_transfer_return_out` | `'API_OPERATION_NATURE_STOCK_TRANSFER_RETURN_OUT'` |
+| `stock_transfer_return_in` | `'API_OPERATION_NATURE_STOCK_TRANSFER_RETURN_IN'` |
+| `stock_transfer_gi_return_wo_gr` | `'API_OPERATION_NATURE_STOCK_TRANSFER_GI_RET_WO_GR'` |
+| `vendor_third_party` | `'API_OPERATION_NATURE_VENDOR_THIRD_PARTY'` |
+| `repair_shipment` | `'API_OPERATION_NATURE_SHIPMENT_REPAIR'` |
+| `repair_shipment_return` | `'API_OPERATION_NATURE_SHIPMENT_REPAIR_RETURN'` |
+
+**Observacao importante**: Os valores finais enviados ao Tax Service dependem do mapeamento na tabela de internal codes (`TXS_INT_CODES`). O internal code (ex: `API_OPERATION_NATURE_PURCHASE`) e resolvido para o valor textual correspondente (ex: `'P'`) via `cl_txs_internal_codes=>get_instance( )->get_single_internal_code_value()`.
+
+#### Logica Detalhada -- SD (cl_txs_operation_nature_br.abap:332-401)
+
+Para SD, o metodo `GET_OPERATION_NATURE_CODE_SD` usa uma tabela de mapeamento (`GET_OPERATION_SD_CODES_MAP`) que associa order types SD a operation nature codes:
+
+| Order Type (Internal Code) | Operation Nature |
+|---------------------------|-----------------|
+| `debit_memo_request` | `debit_memo` |
+| `credit_memo_request` | `credit_memo` |
+| `consignment_fill_up` | `consignment_shipment` |
+| `consignment_issue` | `consignment_invoice` |
+| `consignment_pick_up` | `return_with_customer_nf` |
+| `consignment_return_cust_nf` | `return_with_customer_nf` |
+| `consignment_return_own_nf` | `return_with_own_nf` |
+| `third_party_shipment` | `third_party_shipment` |
+| `third_party_invoice` | `third_party_invoice` |
+| `return_own_nf` | `return_with_own_nf` |
+| `future_delivery_invoice` | `future_delivery_invoice` |
+| `future_delivery_shipment` | `future_delivery_shipment` |
+| `returnable_packaging_sales` | `returnable_packaging` |
+| `vendor_third_party` (VTP) | `vendor_third_party` |
+
+Fallbacks SD:
+- Se nenhum order type mapeado, verifica se e billing doc transfer → `sale_invoice` (ou `vendor_third_party` se VTP)
+- Default final → `sale` (ou `vendor_third_party` se VTP)
+- Excecao: accelerated return (`CBAR`) com credit memo → `credit_memo`
+- Excecao: inhouse repair → `repair_shipment` ou `repair_shipment_return`
+- Excecao: intercompany stock transfer return → `return_with_customer_nf`
+
+**Fonte**: cl_txs_operation_nature_br.abap:132-401
+
+#### Logica Detalhada -- MM (cl_txs_operation_nature_br.abap:202-329)
+
+```
+1. E PO transaction?
+   |
+   +-- Tax code = std_purchase_material/service/asset?
+   |     +-- VTP scenario? → vendor_third_party
+   |     +-- Senao → purchase
+   |
+   +-- Tax code = consignment_invoice?
+         → consignment_invoice
+
+2. E goods receipt?
+   |
+   +-- Tax code = consignment_shipping?
+   |     → consignment_shipment
+   |
+   +-- E consignment return?
+   |     → consignment_return_of_goods
+   |
+   +-- Verifica movement type:
+         +-- trnsfr_pstng_to_subcontracting → goods_issue
+         +-- trnsfr_pstng_from_subcontract → goods_receipt
+         +-- goods_receipts_symbolic_return ou consump_stck_mat_prvdr_vnd_rev → goods_receipt_symbolic
+
+3. E invoice (MIRO)?
+   |
+   +-- MIRO event = invoice (1)?
+   |     +-- Tax code = std_purchase/service/asset?
+   |     |     +-- VTP scenario? → vendor_third_party
+   |     |     +-- Senao → purchase_invoice
+   |     +-- Tax code = consignment_invoice → consignment_invoice
+   |
+   +-- MIRO event = credit_memo (2)?
+   |     → return_to_vendor
+   |
+   +-- MIRO event = subsequent_debit (3)?
+         → subsequent_debit
+
+4. Default (nenhuma condicao atendida)
+   → purchase
+```
+
+**Constantes MIRO event** (Fonte: if_txs_constants.abap:107-111):
+- `miro_event-invoice_event` = `'1'`
+- `miro_event-credit_memo_event` = `'2'`
+- `miro_event-subsequent_debit_event` = `'3'`
+
+#### Logica Detalhada -- STO (cl_txs_operation_nature_br.abap:404-450)
+
+```
+1. Determina movement type via STO context
+   |
+   +-- is_outgoing?
+   |     +-- is_return? → stock_transfer_return_out
+   |     +-- Senao → stock_transfer_outgoing
+   |
+   +-- is_incoming?
+   |     +-- is_return? → stock_transfer_return_in
+   |     +-- Senao → stock_transfer_incoming
+   |
+   +-- is_gi_return_wo_gr? ou is_return_to_scrap?
+         → stock_transfer_gi_return_wo_gr
+```
+
+---
+
+## Pontos de Debug
+
+### Breakpoints Recomendados para Header
+
+| # | Classe::Metodo | O que observar | Fonte |
+|---|----------------|----------------|-------|
+| 1 | `CL_TXS_PAYLOAD_BR::BUILD_HEADER` | Todos os campos header apos populacao. `payload` contem a estrutura completa. | cl_txs_payload_br.abap:52-57 |
+| 2 | `CL_TXS_PAYLOAD::BUILD_HEADER` | Campos base: `id`, `date`, `saleor_purchase`, `gross_or_net`, `currency`, `company_id` | cl_txs_payload.abap:103-111 |
+| 3 | `CL_TXS_PAYLOAD_BR::GET_PAYLOAD_DATE` | Logica de determinacao de data. Verificar `lv_new_date`, `lv_plant_timezone`, `lv_time_plant` | cl_txs_payload_br.abap:257-325 |
+| 4 | `CL_TXS_PAYLOAD_BR::GET_GROSS_OR_NET` | Decisao gross vs. net. Verificar `is_downpayment_transaction()`, `is_gross_price_active()` | cl_txs_payload_br.abap:76-98 |
+| 5 | `CL_TXS_PAYLOAD_BR::GET_OPERATION_NATURE_CODE` | Roteamento: STO vs. SD vs. MM | cl_txs_payload_br.abap:101-119 |
+| 6 | `CL_TXS_OPERATION_NATURE_BR::GET_OPERATION_NATURE_CODE_SD` | Mapeamento SD: order type → operation nature | cl_txs_operation_nature_br.abap:332-401 |
+| 7 | `CL_TXS_OPERATION_NATURE_BR::GET_OPERATION_NATURE_CODE_MM` | Mapeamento MM: tax code, mvt type, MIRO event → operation nature | cl_txs_operation_nature_br.abap:202-329 |
+| 8 | `CL_TXS_OPERATION_NATURE_BR::GET_OPERATION_NATURE_CODE_STO` | Mapeamento STO: incoming/outgoing, return | cl_txs_operation_nature_br.abap:404-450 |
+| 9 | `CL_TXS_PAYLOAD_FACTORY::GET_PAYLOAD` | Determina qual classe payload foi instanciada (ex: `CL_TXS_PAYLOAD_BR`) | cl_txs_payload_factory.abap:51-79 |
+| 10 | `CL_TXS_PAYLOAD::APPLY_CUSTOM_LOGIC` | Verifica se o BAdI `BD_GSLOG_EXT_TAX_CALC_PAYLOAD` esta implementado e quais campos foram modificados | cl_txs_payload.abap:68-92 |
+| 11 | `CL_TXS_PAYLOAD::GET_SALES_OR_PURCHASE` | Verificar `get_application_for_payload()` retorna `'V'` ou `'TX'` | cl_txs_payload.abap:199-211 |
+| 12 | `CL_TXS_PAYLOAD_BR::IS_GROSS_PRICE_ACTIVE` | Verificar `product_type`, `tax_code` e resultado de `is_active_by_item_line` | cl_txs_payload_br.abap:357-366 |
+
+### Dica de Debug -- Payload Completo
+
+Para ver o payload completo (header + items + locations + party + bp_exemption + extensions) **apos toda a construcao e BAdI**, coloque breakpoint em:
+
+- `CL_TXS_PAYLOAD::IF_TXS_PAYLOAD~GET_PAYLOAD` (cl_txs_payload.abap:230-232) -- chamado pelo controller para obter o payload final
+- Ou logo apos `IF_TXS_PAYLOAD~BUILD` (cl_txs_payload.abap:227) e inspecione `payload`
+
+---
+
+## Fontes de Dados SAP Referenciadas
+
+| Tabela/Estrutura | Campo(s) | Uso no Header |
+|-----------------|----------|---------------|
+| `KOMK` | `BUKRS` | `company_id` |
+| `KOMK` | `WAERK` | `currency` |
+| `KOMK` | `FKDAT` | `date` (billing date - SD billing, STO SD) |
+| `KOMK` | `ERDAT` | `date` (creation date - STO SD fallback) |
+| `KOMK` | `PRSDT` | `date` (pricing date - SD outros, STO MM) |
+| `KOMK` | `KAPPL` | `saleor_purchase` (V=SD, TX=MM) |
+| `KOMK` | `VBTYP` | `operation_nature_code` (document category SD) |
+| `KOMK` | `AUART_SD` | `operation_nature_code` (order type SD) |
+| `KOMP` | `MWSKZ` | `operation_nature_code` (tax code MM) |
+| `KOMP` | `PSTYP` | `operation_nature_code` (item category MM - VTP check) |
+| `KOMP` | `PSTYV` | `operation_nature_code` (item category SD - VTP check) |
+| `T001W` | `LAND1`, `REGIO`, `PSTLZ` | `date` (timezone da planta) |
+| `SY-DATUM` | -- | `date` (data do sistema - fallback) |
+| `SY-TIMLO` | -- | `date` (hora local do sistema) |
+| `SY-ZONLO` | -- | `date` (timezone do sistema) |
+
+---
+
+## Instanciacao via Factory
+
+O `CL_TXS_PAYLOAD_FACTORY` (cl_txs_payload_factory.abap:51-79) determina qual classe de payload instanciar:
+
+1. Determina o tipo de payload via `CL_TXS_PAYLOAD_TYPE=>GET_INSTANCE`
+2. Tenta instanciar `{payload_type}_{country}` (ex: `CL_TXS_PAYLOAD_BR`)
+3. Se a classe especifica do pais nao existir (`CX_SY_DYN_CALL_ILLEGAL_CLASS`), instancia `{payload_type}` (classe base)
+
+Este e o padrao **Country Specialization** usado em todo o TXS: tenta primeiro a classe com sufixo `_BR`, e faz fallback para a classe base.
+
+**Fonte**: cl_txs_payload_factory.abap:51-79
+
+---
+
+## Extensibilidade
+
+### BAdI: BD_GSLOG_EXT_TAX_CALC_PAYLOAD
+
+- **Metodo**: `EXTEND_PAYLOAD`
+- **Chamado em**: `CL_TXS_PAYLOAD::APPLY_CUSTOM_LOGIC` (cl_txs_payload.abap:68-92)
+- **Momento**: APOS todos os builds (header, item, locations, party, bp_exemption)
+- **Pode modificar**: **QUALQUER** campo do payload (header e sub-estruturas), pois recebe `CHANGING payload = payload`
+
+**Parametros exportados pelo BAdI**:
+
+| Parametro | Tipo | Descricao |
+|-----------|------|-----------|
+| `pricing_header` | Estrutura KOMK | Header do pricing |
+| `pricing_item` | Estrutura KOMP | Item do pricing |
+| `lfd_for_consumption` | `IF_GSLOG_LFD_FOR_CONSUMPTION` | Local Fiscal Data para consumo |
+
+**Parametro CHANGING**:
+
+| Parametro | Tipo | Descricao |
+|-----------|------|-----------|
+| `payload` | `TXS_PAYLOAD` | Payload completo (header + sub-estruturas) |
+
+**Fonte**: cl_txs_payload.abap:68-92
+
+### Campos tipicamente preenchidos via BAdI
+
+Os seguintes campos do header **nao sao populados no standard** e so podem ser preenchidos via este BAdI:
+
+- `cash_discount_percent` -- Percentual de desconto financeiro
+- `business_partner_id` -- ID do parceiro de negocios (fornecedor/cliente)
+- `is_transaction_in_tax_group` -- Indicador de grupo fiscal
+- `is_comp_deferred_tax_enabled` -- Indicador de imposto diferido
+- `is_cash_discount_planned` -- Indicador de desconto financeiro planejado
+
+### Extensao da Estrutura DDIC
+
+A estrutura `TXS_PAYLOAD` possui annotation `@AbapCatalog.enhancement.category : #EXTENSIBLE_ANY`, permitindo adicionar novos campos via append structure. Campos adicionados podem ser populados via BAdI `EXTEND_PAYLOAD`.
+
+---
+
+## Glossario de Classes Referenciadas
+
+| Classe | Responsabilidade |
+|--------|-----------------|
+| `CL_TXS_PAYLOAD` | Builder base do payload (generico, todos os paises) |
+| `CL_TXS_PAYLOAD_BR` | Builder do payload para Brasil (herda de CL_TXS_PAYLOAD) |
+| `CL_TXS_PAYLOAD_FACTORY` | Factory que instancia o builder correto por pais |
+| `CL_TXS_OPERATION_NATURE_BR` | Determinacao de operation nature para Brasil (Singleton) |
+| `CL_TXS_INTERNAL_CODES` | Resolucao de internal codes para valores da API |
+| `CL_TXS_DAO` | Data Access Object -- gera UUID, acessa dados |
+| `CL_TXS_FM_DATE_TIME` | Conversao de timezone por localizacao geografica |
+| `CL_TXS_PRICING_CONTEXT` | Encapsula dados de pricing (KOMK, KOMP) |
+| `CL_TXS_DOCUMENT_REFERENCE_BR` | Referencia de documento para MIRO event |
+| `CL_TXS_LOGBR_GRS_PRC_ACT_ADPTR` | Adaptador para verificar se gross price esta ativo |
+| `CL_TXS_LOGBR_MAT_TYPES_DA_ADPT` | Adaptador para tipos de material → product type |
+| `LOGBR_DOWN_PAYT_SCEN_VALDTR` | Validador de cenario de down payment |
+
+---
+
+## Arquivos-Fonte Consultados
+
+| Arquivo | Conteudo |
+|---------|----------|
+| `incoming/txs_payload.abap` | Definicao DDIC da estrutura TXS_PAYLOAD |
+| `incoming/cl_txs_payload.abap` | Classe base do builder de payload |
+| `incoming/cl_txs_payload_br.abap` | Classe Brasil do builder de payload |
+| `incoming/cl_txs_payload_factory.abap` | Factory de payload |
+| `incoming/if_txs_payload.abap` | Interface IF_TXS_PAYLOAD |
+| `incoming/if_txs_constants.abap` | Constantes globais TXS |
+| `incoming/if_txs_constants_br.abap` | Constantes Brasil TXS |
+| `incoming/cl_txs_internal_codes.abap` | Constantes de internal codes |
+| `incoming/cl_txs_operation_nature_br.abap` | Determinacao de operation nature BR |
+| `incoming/cl_txs_dao.abap` | Data Access Object (generate_payload_id) |
+| `incoming/cl_txs_pricing_context.abap` | Pricing context (get_currency) |

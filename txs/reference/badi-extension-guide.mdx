@@ -1,0 +1,317 @@
+---
+title: "TXS — Guia de Extensibilidade"
+description: "Guia pratico para consultores que precisam estender o Tax Service em projetos S/4HANA Public Cloud."
+---
+
+Guia pratico para consultores que precisam estender o Tax Service em projetos S/4HANA Public Cloud.
+
+---
+
+## 1. BAdI Released — BD_GSLOG_EXT_TAX_CALC_PAYLOAD
+
+**Status**: Released (seguro para Public Cloud, compativel com upgrades)
+**Fase TXS**: 3 (Build Payload) — chamado apos o build completo, antes da chamada HTTP
+**Interface**: IF_GSLOG_EXT_TAX_CALC_PAYLOAD
+
+### Assinatura do Metodo
+
+```abap
+methods EXTEND_PAYLOAD
+  importing
+    !I_PRICING_HEADER type KOMK              " Header do pricing (empresa, moeda, parceiro)
+    !I_PRICING_ITEM type KOMP                " Item do pricing (material, quantidade, planta)
+    !I_LFD_FOR_CONSUMPTION type J_1BLFD      " Local Fiscal Data (CNPJ, IE, CFOP, NCM)
+  changing
+    !C_PAYLOAD type TXS_PAYLOAD.             " Payload completo — pode alterar qualquer campo
+```
+
+### O Que Pode Alterar
+
+O parametro `C_PAYLOAD` e a estrutura completa TXS_PAYLOAD. Voce pode:
+- Adicionar/alterar item_classifications (NCM, CEST customizado)
+- Adicionar/alterar additional_item_info (CFOP customizado, flags)
+- Alterar party tax_registration
+- Adicionar bp_exemption_details
+- Modificar locations
+- Modificar header fields
+
+### Exemplo de Uso — Adicionar Campo Customizado
+
+```abap
+METHOD if_gslog_ext_tax_calc_payload~extend_payload.
+  " Exemplo: Adicionar classificacao customizada ao item
+  DATA ls_classification TYPE txs_item_classification.
+  ls_classification-isc_type = 'CUSTOM_TYPE'.
+  ls_classification-isc_code = i_pricing_item-matnr.
+
+  " Localizar item no payload e adicionar classificacao
+  READ TABLE c_payload-_items ASSIGNING FIELD-SYMBOL(<item>)
+       WITH KEY item_code = i_pricing_item-kposn.
+  IF sy-subrc = 0.
+    APPEND ls_classification TO <item>-item_classifications.
+  ENDIF.
+ENDMETHOD.
+```
+
+### Quando Usar
+
+- Precisa enviar dados adicionais ao Tax Engine que o standard nao envia
+- Precisa corrigir/sobrescrever um campo antes do envio HTTP
+- Precisa adicionar classificacoes de material customizadas
+- Precisa alterar informacoes de party/locations
+
+---
+
+## 2. BAdI Nao Released — TXS_BADI_CONTROLLER
+
+**Status**: NAO Released (risco em upgrades — pode quebrar sem aviso)
+**Interface**: IF_EX_TXS_BADI_CONTROLLER
+
+### 2.1 pre_processing()
+
+**Fase TXS**: 1 (Entrada) — chamado antes das validacoes do TXS
+**Pode sobrescrever**: Sim (retorna R_OVERWRITE_STANDARD)
+
+```abap
+methods PRE_PROCESSING
+  importing
+    !I_PRICING_HEADER type KOMK
+    !I_PRICING_CONDITION_RECORDS type TXS_KOMV_INDEX_TTY
+    !I_PLANTS_OR_BRANCHES type T001W
+    !I_TRANSACTION_CODE type SYST_TCODE
+    !I_LOCAL_TIME type TIMS
+    !I_PRICE_DETERMINATION type KOMT1
+    !I_PRICING_PROCESSING_MOMENT type CHAR1
+    !I_COUNTRIES type T005
+    !I_GROUP_CONDITION type GKOMV
+  changing
+    !C_PRICING_ITEM type KOMP
+    !C_PRICING_CONDITION_RECORD type KOMV_INDEX
+    !C_PRICING_CONDITION_VALUE type KWERT
+    !C_SY_SUBRC type SYST_SUBRC
+  returning
+    value(R_OVERWRITE_STANDARD) type ABAP_BOOL.
+```
+
+**Casos de uso**: Interceptar antes do TXS para desativar em cenarios especificos, enriquecer KOMP.
+
+### 2.2 post_processing()
+
+**Fase TXS**: 8 (Pos) — chamado apos todo o mapeamento de conditions
+**Nao pode sobrescrever**: Nao retorna R_OVERWRITE_STANDARD
+
+```abap
+methods POST_PROCESSING
+  importing
+    !I_PRICING_HEADER type KOMK
+    !I_PRICING_CONDITION_RECORDS type TXS_KOMV_INDEX_TTY
+    !I_PLANTS_OR_BRANCHES type T001W
+    !I_TRANSACTION_CODE type SYST_TCODE
+    !I_LOCAL_TIME type TIMS
+    !I_PRICE_DETERMINATION type KOMT1
+    !I_PRICING_PROCESSING_MOMENT type CHAR1
+    !I_COUNTRIES type T005
+    !I_GROUP_CONDITION type GKOMV
+  changing
+    !C_PRICING_ITEM type KOMP
+    !C_PRICING_CONDITION_RECORD type KOMV_INDEX
+    !C_PRICING_CONDITION_VALUE type KWERT
+    !C_SY_SUBRC type SYST_SUBRC.
+```
+
+**Casos de uso**: Ajustar valores de conditions apos mapeamento, gravar logs customizados.
+
+### 2.3 error_handling()
+
+**Fase TXS**: 8 (Pos) — chamado quando cx_txs_exception e capturada
+
+```abap
+methods ERROR_HANDLING
+  importing
+    !I_EXCEPTION type ref to CX_TXS_EXCEPTION
+    !I_PRICING_ITEM type KOMV_INDEX
+    !I_PRICING_CONDITION_RECORD type KOMV_INDEX
+  returning
+    value(R_OVERWRITE_STANDARD) type ABAP_BOOL.
+```
+
+**Casos de uso**: Tratamento customizado de erros, supressao de mensagens, logging alternativo.
+
+### 2.4 calculate_taxes()
+
+**Fase TXS**: 4 (HTTP) — chamado ANTES da chamada HTTP real
+
+```abap
+methods CALCULATE_TAXES
+  importing
+    !I_COMMUNICATION type ref to IF_TXS_COMMUNICATION optional
+    !I_RESPONSE_BUFFER type ref to IF_TXS_RESPONSE_BUFFER
+  returning
+    value(R_RESPONSE) type ref to IF_TXS_RESPONSE.
+```
+
+**Casos de uso**: Usado por parceiros (Vertex, Sovos) para integrar seu proprio engine. Se retornar response, a chamada HTTP standard e pulada.
+
+---
+
+## 3. Extended Fields V2 — Campos YY1_*
+
+**Classe**: CL_TXS_CUSTOM_FIELD_EXTRACTOR
+**Disponivel**: Apenas payload V2 (SD + integracao ativa)
+
+### Como Funciona
+
+1. O extractor usa RTTI (`CL_ABAP_STRUCTDESCR`) para inspecionar a estrutura KOMK
+2. Filtra campos com prefixo `YY1_` (convencao Key User Extensibility)
+3. Popula `_extensions[]` no header e `item_extensions[]` nos items
+
+```abap
+" Detecta campos YY1_* automaticamente
+method get_custom_fields.
+  data(components) = cast cl_abap_structdescr(
+    cl_abap_typedescr=>describe_by_data(i_source_data_object))->components.
+
+  r_extended_fields = value #(
+    for <comp> in components
+    where ( name+0(4) = 'YY1_' )
+    ( custom_field = <comp>-name ) ).
+endmethod.
+```
+
+### Como Criar um Campo YY1_*
+
+1. **Fiori App**: "Custom Fields" (F1481) — criar campo customizado em Purchase Order ou Sales Order
+2. O campo recebe automaticamente o prefixo `YY1_`
+3. Na proxima chamada TXS V2, o campo aparece em `_extensions[]` do payload
+4. O Tax Engine recebe e pode usar na determinacao de impostos
+
+### Estrutura no Payload
+
+```json
+{
+  "extensions": [
+    { "customField": "YY1_SPECIAL_TAX_FLAG", "customFieldValue": "X" }
+  ],
+  "items": [{
+    "itemExtensions": [
+      { "customField": "YY1_MATERIAL_GROUP_2", "customFieldValue": "MINING" }
+    ]
+  }]
+}
+```
+
+---
+
+## 4. Tabelas de Customizing
+
+### 4.1 TXS_TAX_CODE_MAP — Mapeamento de Tax Code
+
+Mapeia tax codes entre o Tax Engine externo e o S/4HANA.
+
+| Campo | Descricao | Exemplo |
+|-------|-----------|---------|
+| COUNTRY | Pais (ISO 2 letras) | BR |
+| COND_USAGE | Uso da condicao (A=Pricing) | A |
+| APPLICATION | Aplicacao (V=SD, TX=MM) | TX |
+| PRICING_NAME | Pricing Procedure | TXBRA1 |
+| MWSKZ | Tax code S/4 | I1 |
+| EXTERNAL_TAX_CODE | Tax code do engine externo | BR_ICMS_18 |
+| TAX_JURISDICTION_CODE | Codigo jurisdicao (opcional) | 3550308 |
+
+**Classe DAO**: CL_TXS_TAX_CODE_DAO
+**Variante customizing**: TXS_TAX_CODE_MAP_C (prioridade sobre standard)
+
+**Erros comuns**:
+- 0 matches → `CX_TXS_TAX_CODE_CONFIG_ERROR` (tax code nao configurado)
+- N matches → `CX_TXS_TAX_CODE_CONFIG_ERROR` (ambiguidade)
+
+### 4.2 TXS_COND_MAP — Mapeamento de Condition Types
+
+Mapeia condition types de pricing para classes de mapeamento customizadas.
+
+| Campo | Descricao | Exemplo |
+|-------|-----------|---------|
+| COUNTRY | Pais | BR |
+| COND_USAGE | Uso | A |
+| APPLICATION | Aplicacao | TX |
+| PRICING_NAME | Pricing Procedure | TXBRA1 |
+| CONDITION_TYPE | Tipo de condicao | BX16 |
+| CLASS | Classe mapper customizada | ZCL_MY_CUSTOM_MAPPER |
+| DUE_CATEGORY | Categoria de vencimento | MONTHLY |
+| JURISDIC_CODE | Codigo jurisdicao | 3550308 |
+
+**Classe DAO**: CL_TXS_CONDITIONS_DAO
+**Variante customizing**: TXS_COND_MAP_C (prioridade sobre standard)
+
+**Logica de busca** (CL_TXS_COND_MAPPER_FACTORY):
+1. Classe customizada na TXS_COND_MAP? → Usa classe customizada
+2. V2 (payload_v2)? → CL_TXS_STANDARD_TAX_MAP_V2
+3. V1 (default)? → CL_TXS_CONDITIONS_MAPPER_BR (ou fallback CL_TXS_STANDARD_TAX_MAP)
+
+---
+
+## 5. BAdI Implementations por Area (Referencia)
+
+### MM — Materials Management
+
+| Classe | BAdI Interface | Funcao |
+|--------|---------------|--------|
+| CL_IM_TXS_ME_PO_PRICING | IF_EX_ME_PO_PRICING | Buffer de dados PO (header, item, partners) |
+| CL_IM_TXS_MM_GOODS_RECEIPT | - | Contexto de entrada de mercadoria |
+| CL_IM_TXS_MM_PROCESS_PO | - | Processamento de PO |
+| CL_IM_TXS_MM_TRACE_INVOICE | - | Rastreio de invoice verification |
+| CL_IM_TXS_MM_TRACE_PODOC | - | Rastreio de documento PO |
+| CL_IM_TXS_MB_CHECK_LINE | - | Verificacao de linha de documento |
+| CL_IM_TXS_INVOICE_ITEM | - | Item de invoice |
+
+### SD — Sales and Distribution
+
+| Classe | BAdI Interface | Funcao |
+|--------|---------------|--------|
+| CL_IM_TXS_SD_BILLING | IF_EX_BADI_SD_BILLING | Validacao de billing document |
+| CL_IM_TXS_SD_BILLING_ITEM | IF_TXS_BADI_SD_BILLING_ITEM | Item de billing |
+| CL_IM_TXS_SD_PROCESS_ITEM | - | Processamento de item SD |
+| CL_IM_TXS_SD_SALES_BASIC | IF_TXS_SD_SALES_BASIC | Sales order basico |
+| CL_IM_TXS_BADI_SD_SALES | IF_TXS_BADI_SD_SALES | BAdI de vendas |
+| CL_IM_TXS_BADI_SD_ACCOUNTING | - | Contabilizacao SD |
+| CL_IM_TXS_BADI_SD_COM_COUNTRY | IF_TXS_BADI_SD_COM_COUNTRY | Pais de comunicacao |
+
+### Brasil Especificos
+
+| Classe | Funcao |
+|--------|--------|
+| CL_IM_TXS_BILLING_ITEM_CBTA_BR | CBTA em billing item |
+| CL_IM_TXS_BILLING_ITEM_FCI_BR | FCI (Ficha de Conteudo de Importacao) |
+| CL_IM_TXS_BR_CRMS4_COND_MULT | Multiplicacao de condicoes CRM-S4 |
+| CL_IM_TXS_FI_BR | Integracao financeira Brasil |
+| CL_IM_TXS_BUPA_ADDR_CHECK | Verificacao de endereco de Business Partner |
+
+### Padrao Comum nas BAdI Implementations
+
+```abap
+" 1. Verificar se TXS esta ativo
+IF cl_txs_switch=>get_instance( )->is_active( ) = abap_false.
+  RETURN.
+ENDIF.
+
+" 2. Buffer dados para uso posterior
+cl_txs_mm_purchase_header_buff=>get_instance( )->set_ekko( im_ekko ).
+cl_txs_mm_purchase_item_buffer=>get_instance( )->set_ekpo( im_ekpo ).
+
+" 3. Definir contexto de transacao
+cl_txs_business_transaction=>get_instance( )
+  ->set_business_transaction( if_txs_business_transaction=>business_transactions-purchase_order ).
+```
+
+---
+
+## Resumo — Qual Extensao Usar?
+
+| Necessidade | Extensao | Risco |
+|-------------|----------|-------|
+| Adicionar campo ao payload antes do HTTP | BAdI BD_GSLOG_EXT_TAX_CALC_PAYLOAD | Baixo (Released) |
+| Campos customizados YY1_* automaticos | Key User Custom Fields + Payload V2 | Baixo |
+| Interceptar antes/depois do TXS | BAdI TXS_BADI_CONTROLLER | Alto (Nao Released) |
+| Usar tax engine proprio | BAdI TXS_BADI_CONTROLLER::calculate_taxes() | Alto (Nao Released) |
+| Mapear condition type customizado | Tabela TXS_COND_MAP + classe customizada | Medio (customizing) |
+| Mapear tax code customizado | Tabela TXS_TAX_CODE_MAP | Baixo (customizing) |

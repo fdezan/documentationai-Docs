@@ -1,0 +1,134 @@
+---
+title: "Cheat Sheet — Tabelas de Configuracao TXS"
+description: "Material de apoio para treinamento TXS/TACS. Imprimir em 1 pagina."
+---
+
+<Callout kind="tip">
+Material de apoio para treinamento TXS/TACS. Imprimir em 1 pagina.
+</Callout>
+
+
+## 1. TXS_ACTIVATION — Ativar TXS por Aplicacao
+
+Ativa o Tax Service para uma combinacao de aplicacao + pricing procedure + pais.
+
+| Campo | Tipo | Descricao |
+|-------|------|-----------|
+| `APPLICATION` | CHAR 2 | Aplicacao SAP (`MM`, `SD`) |
+| `PRICING_PROCEDURE` | CHAR 6 | Pricing procedure (ex: `ZMM001`) |
+| `COUNTRY` | CHAR 2 | Pais (`BR`) |
+| `ACTIVE` | FLAG | `X` = ativo |
+
+**Exemplos:**
+
+| APPLICATION | PRICING_PROCEDURE | COUNTRY | ACTIVE | Descricao |
+|:-:|:-:|:-:|:-:|---|
+| `MM` | `ZMM001` | `BR` | `X` | TXS ativo para compras Brasil |
+| `SD` | `ZSD001` | `BR` | `X` | TXS ativo para vendas Brasil |
+| `MM` | `ZMMEXP` | `BR` | `X` | TXS ativo para compras exportacao |
+
+**Classe DAO**: `CL_TXS_ACTIVATION_DAO`
+**Check em**: `CL_TXS_SWITCH::IS_ACTIVE` (check #2)
+
+---
+
+## 2. TXS_ACTIVATION_EXCEPTION — Desativar para Empresa/Planta
+
+Permite desativar o TXS para empresas ou plantas especificas, mesmo que `TXS_ACTIVATION` esteja ativo.
+
+| Campo | Tipo | Descricao |
+|-------|------|-----------|
+| `COMPANY_CODE` | CHAR 4 | Codigo da empresa |
+| `PLANT` | CHAR 4 | Planta (opcional — se vazio, aplica a toda empresa) |
+| `CALCULATION_ENGINE` | CHAR 20 | Motor de calculo (`PARTNER_ENGINE` = TXS ativo, outro valor = TXS desativado) |
+
+**Exemplo — Desativar TXS para empresa 3000:**
+
+| COMPANY_CODE | PLANT | CALCULATION_ENGINE | Efeito |
+|:---:|:---:|:---:|---|
+| `3000` | *(vazio)* | `INTERNAL` | TXS desativado para toda empresa 3000 |
+| `3000` | `3001` | `INTERNAL` | TXS desativado apenas para planta 3001 |
+
+**Check em**: `CL_TXS_SWITCH::IS_ACTIVE` (check #3)
+
+---
+
+## 3. TXS_TAX_CODE_MAP — Mapeamento Tax Code Externo → S/4
+
+Converte o tax code retornado pelo Tax Engine no tax code SAP (MWSKZ).
+
+| Campo | Tipo | Descricao |
+|-------|------|-----------|
+| `COUNTRY` | CHAR 2 | Pais (`BR`) |
+| `COND_USAGE` | CHAR 1 | Tipo de uso da condition |
+| `APPLICATION` | CHAR 2 | Aplicacao (`MM`, `SD`) |
+| `PRICING_NAME` | CHAR 6 | Pricing procedure |
+| `MWSKZ` | CHAR 2 | Tax code SAP (resultado) |
+| `EXTERNAL_TAX_CODE` | CHAR 40 | Tax code retornado pelo Engine |
+
+**Exemplos:**
+
+| COUNTRY | APPLICATION | PRICING_NAME | MWSKZ | EXTERNAL_TAX_CODE | Descricao |
+|:-:|:-:|:-:|:-:|---|---|
+| `BR` | `MM` | `ZMM001` | `B1` | `BR_ICMS_18` | ICMS 18% compra interna SP |
+| `BR` | `MM` | `ZMM001` | `B2` | `BR_IPI_5` | IPI 5% |
+| `BR` | `MM` | `ZMM001` | `B3` | `BR_PIS_165` | PIS 1.65% |
+
+**Classe DAO**: `CL_TXS_TAX_CODE_DAO::GET_S4_TAX_CODE_SINGLE`
+**Erro se sem match**: `CX_TXS_TAX_CODE_CONFIG_ERROR`
+
+### TXS_TAX_CODE_MAP_C — Variante Customizing
+
+Mesma estrutura que `TXS_TAX_CODE_MAP`, porem com **prioridade**. O sistema busca primeiro em `_C`, depois no standard. Use para sobrescrever mapeamentos sem alterar o standard.
+
+---
+
+## 4. TXS_COND_MAP — Mapeamento Condition Type → Classe Mapper
+
+Permite associar uma classe ABAP mapper customizada a um condition type especifico.
+
+| Campo | Tipo | Descricao |
+|-------|------|-----------|
+| `COUNTRY` | CHAR 2 | Pais |
+| `COND_USAGE` | CHAR 1 | Tipo de uso |
+| `APPLICATION` | CHAR 2 | Aplicacao |
+| `PRICING_NAME` | CHAR 6 | Pricing procedure |
+| `CONDITION_TYPE` | CHAR 4 | Condition type (ex: `BX16`, `ICM1`) |
+| `CLASS` | CHAR 30 | Classe ABAP mapper |
+| `DUE_CATEGORY` | CHAR 1 | Categoria de vencimento |
+| `JURISDIC_CODE` | CHAR 15 | Codigo de jurisdicao |
+
+**Quando usar**: Quando a logica padrao de mapeamento (`CL_TXS_CONDITIONS_MAPPER_BR`) nao atende e e necessario um mapper customizado.
+
+**Hierarquia de busca** (classe `CL_TXS_COND_MAPPER_FACTORY::INITIALIZE`):
+1. `TXS_COND_MAP_C` (customizing, prioridade)
+2. `TXS_COND_MAP` (standard)
+3. V2 → `CL_TXS_STANDARD_TAX_MAP_V2` (default V2)
+4. V1/BR → `CL_TXS_CONDITIONS_MAPPER_BR` (default V1, fallback `CL_TXS_STANDARD_TAX_MAP`)
+
+### TXS_COND_MAP_C — Variante Customizing
+
+Mesma estrutura, com prioridade sobre `TXS_COND_MAP`.
+
+---
+
+## 5. Communication Arrangement — Conexao com Tax Engine
+
+| Componente | Configuracao | Detalhe |
+|-----------|-------------|---------|
+| **Communication System** | URL base do Engine | `https://tax-engine.partner.com/api/v2` |
+| **Autenticacao** | **OAuth2 Client Credentials** | `client_id` + `client_secret` + `token_url` |
+| **Logical Port** | Referencia logica ABAP | Usada por `CL_TXS_CONN_CONFIG_FACTORY` para encontrar a conexao |
+| **Communication Arrangement** | Vincula scenario ao sistema | Ativa a comunicacao |
+
+**Headers HTTP enviados pelo TXS:**
+
+| Header | Valor | Funcao |
+|--------|-------|--------|
+| `X-CorrelationID` | UUID do payload | Rastrear request no Engine e no SLG1 |
+| `X-Routing-Key` | Chave do parceiro/tenant | Roteamento no Engine |
+| `Content-Type` | `application/json` | Formato do payload |
+| `Connection` | `keep-alive` | Reutilizar conexao TCP |
+
+**Classes ABAP**: `CL_TXS_CONNECTION` (cria REST client), `CL_TXS_COMMUNICATION` (envia POST)
+**Check em**: `CL_TXS_SWITCH::IS_ACTIVE` (check #1 — conexao configurada?)

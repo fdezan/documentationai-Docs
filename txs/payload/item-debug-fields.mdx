@@ -1,0 +1,219 @@
+---
+title: "TXS — Debug dos Campos do Item (Classifications + Additional Info)"
+description: "Referencia rapida de debug para os campos das estruturas `TXS_ITEM_CLASSIFICATION` e `TXS_ADDIT_ITEM_INFORMATION`."
+---
+
+<Callout kind="info">
+Referencia rapida de debug para os campos das estruturas `TXS_ITEM_CLASSIFICATION` e `TXS_ADDIT_ITEM_INFORMATION`.
+Para cada campo do payload: metodo de debug, cenario (MM/SD/STO/Servico) e origem do dado.
+Valores verificados contra codigo-fonte ABAP em `incoming/`.
+</Callout>
+
+
+---
+
+## 1. Item Classifications — 8 campos
+
+Classe: `CL_TXS_ITEM_CLASSIFICATIONS_BR`
+
+---
+
+**ncm (Nomenclatura Comum do Mercosul)**
+- Material:
+  - Metodo: `GET_MATERIAL_NCM`
+  - Origem: `MARC-STEUC`
+- STO:
+  - Metodo: `GET_MATERIAL_NCM_STO`
+  - Origem: `MARC-STEUC` (planta recebedora)
+
+**cest (Codigo Especificador da Substituicao Tributaria)**
+- Material:
+  - Metodo: `GET_MATERIAL_CEST`
+  - Origem: `MARC-J_1BCEST`
+- STO:
+  - Metodo: `GET_MATERIAL_CEST_STO`
+  - Origem: `MARC-J_1BCEST`
+
+**ean (Codigo de Barras)**
+- Material:
+  - Metodo: `GET_MATERIAL_EAN`
+  - Origem: `MARM-EAN11`
+- STO:
+  - Metodo: `GET_MATERIAL_EAN_STO`
+  - Origem: `MARM-EAN11`
+
+**exTipi (Ex-TIPI)**
+- Material:
+  - Metodo: `GET_MATERIAL_EXTIPI`
+  - Origem: `MARC-EXTIPI`
+- STO:
+  - Metodo: `GET_MATERIAL_EXTIPI_STO`
+  - Origem: `MARC-EXTIPI`
+
+**servTypeExec (Tipo de Servico — Execucao)**
+- MM:
+  - Metodo: `GET_MM_SERVICE_EXEC`
+  - Origem: `J_1BSERVASSIGN2-SERVTYPE_IN` (jurisdiction do endereco de entrega)
+- SD:
+  - Metodo: `GET_SD_SERVICE_EXEC`
+  - Origem: `J_1BSERVASSIGN2-SERVTYPE_OUT` (jurisdiction do cliente)
+
+**servTypeFed (Tipo de Servico — Federal / Codigo ABRASF / LC 116)**
+- MM:
+  - Metodo: `GET_MM_SERVICE_FEDERAL`
+  - Origem: `CL_LOGBR_ABRASF_DET`, fallback `J_1BSERVTYPES1-ABRASF`
+- SD:
+  - Metodo: `GET_SD_SERVICE_FEDERAL`
+  - Origem: `CL_LOGBR_ABRASF_DET`, fallback `J_1BSERVTYPES2-CLISTSERV`
+
+**servTypeFrom (Tipo de Servico — Origem)**
+- MM:
+  - Metodo: `GET_MM_SERVICE_FROM`
+  - Origem: `J_1BSERVASSIGN2-SERVTYPE_IN` (jurisdiction do fornecedor)
+- SD:
+  - Metodo: `GET_SD_SERVICE_FROM`
+  - Origem: `J_1BSERVASSIGN2-SERVTYPE_OUT` (jurisdiction do plant)
+
+**nbs (Nomenclatura Brasileira de Servicos)**
+- MM/SD:
+  - Metodo: `GET_NBS`
+  - Origem: `LOGBR_NBS_READER_DA->READ_NBS_BY_MATERIAL`
+
+---
+
+## 2. Additional Item Information — 16 campos
+
+Classe: `CL_TXS_ADDITIONAL_ITEM_INFO_BR`
+
+---
+
+**commercialQuantity (Quantidade Comercial)**
+- Material:
+  - Metodo: `GET_COMMERCIAL_QUANTITY`
+  - Origem: pricing context — so envia quando unidade tributavel difere da comercial
+
+**materialOrigin (Origem do Material)**
+- Material:
+  - Metodo: `GET_MATERIAL_ORIGIN`
+  - Origem: campo `MTORG` do item
+- STO:
+  - Metodo: `GET_MATERIAL_ORIGIN_STO`
+  - Origem: dados do material na planta fornecedora
+
+**ownProduction (Producao Propria)**
+- Material (SD):
+  - Metodo: `GET_MATERIAL_OWN_PRODUCTION`
+  - Origem: campo `OWNPR` do item — flag yes/no
+- STO (outgoing):
+  - Metodo: `GET_MATERIAL_OWN_PRODUCT_STO`
+  - Origem: dados do material na planta fornecedora
+
+**ownProductionOnPlantOrigin (Producao Propria na Planta de Origem)**
+- STO (incoming, exceto retorno):
+  - Metodo: `GET_MAT_OWNPROD_ORIG_PLANT_STO`
+  - Origem: dados do material na planta fornecedora
+
+**referenceId (ID de Referencia)**
+- MM:
+  - Metodo: `GET_REFERENCE_ID`
+  - Origem: `CL_TXS_REFERENCE_ID_BR->GET_REFERENCE_ID_MM`
+- SD:
+  - Metodo: `GET_REFERENCE_ID`
+  - Origem: `CL_TXS_REFERENCE_ID_BR->GET_REFERENCE_ID_SD`
+- STO:
+  - Metodo: `GET_REFERENCE_ID_STO`
+  - Origem: `CL_TXS_REFERENCE_ID_BR->GET_REFERENCE_ID_STO`
+
+**taxClassification (Classificacao Fiscal)**
+- Material/Servico:
+  - Metodo: `GET_TAX_CLASSIFICATION`
+  - Origem: tabela `LOGBR_TAX_CLFN` — busca por material + data de vigencia
+
+**usage (Utilizacao do Material)**
+- Material MM:
+  - Metodo: `GET_MATERIAL_USAGE_MM`
+  - Origem: campo `MTUSE` do item
+- Material SD:
+  - Metodo: `GET_MATERIAL_USAGE_SD`
+  - Origem: tax code SD
+- STO:
+  - Metodo: `GET_MATERIAL_USAGE_STO`
+  - Origem: material usage da Purchase Order
+- Servico MM:
+  - Metodo: `GET_SERVICE_USAGE_MM`
+  - Origem: campo `MTUSE` do item
+- Servico SD:
+  - Metodo: `GET_SERVICE_USAGE_SD`
+  - Origem: campo `MTUSE` do item
+- Servico Frete:
+  - Metodo: `GET_SERVICE_USAGE_FREIGHT`
+  - Origem: `EKPO-J_1BMATUSE`
+
+**usagePurpose (Finalidade de Utilizacao)**
+- Material MM:
+  - Metodo: `GET_MATERIAL_USAGE_PURPOSE_MM`
+  - Origem: material usage + tax code
+- Material SD:
+  - Metodo: `GET_MATERIAL_USAGE_PURPOSE_SD`
+  - Origem: document type + item category + tax code
+- STO (incoming):
+  - Metodo: `GET_MATERIAL_USAGE_PURPOSE_MM`
+  - Origem: material usage + tax code
+- Servico MM:
+  - Metodo: `GET_SERVICE_USAGE_PURPOSE_MM`
+  - Origem: campo `MTUSE`
+- Servico SD:
+  - Metodo: `GET_SERVICE_USAGE_PURPOSE_SD`
+  - Origem: document type + item category + tax code
+
+**subcontracting (Subcontratacao)**
+- Material (quando subcontratacao):
+  - Metodo: `GET_SUBCONTRACTING_INFO`
+  - Origem: contexto do documento de material — retorna `component` ou `mainitem`
+
+**laborContract (Cessao de Mao de Obra)**
+- Servico MM:
+  - Metodo: `GET_SERVICE_LABOR_CONTRACT_MM`
+  - Origem: tabela `LOGBR_REINF_DET` — flag REINF do material
+- Servico SD:
+  - Metodo: `GET_SERVICE_LABOR_CONTRACT_SD`
+  - Origem: tax code SD (verifica se e `serv_rend_issqn_labor_contrct`)
+
+**cprb (Contribuicao Previdenciaria sobre Receita Bruta)**
+- Material SD:
+  - Metodo: `GET_MATERIAL_CPRB_RELEVANT`
+  - Origem: tabela `TXS_SD_CPRB_BR`
+- Servico MM:
+  - Metodo: `GET_SERVICE_CPRB_RELEVANT_MM`
+  - Origem: tabela `TXS_MM_CPRB_BR`
+- Servico SD:
+  - Metodo: `GET_SERVICE_CPRB_RELEVANT_SD`
+  - Origem: tabela `TXS_SD_CPRB_BR`
+
+**businessTransaction (Transacao Comercial)**
+- SD (default):
+  - Metodo: `APPEND_DEFAULT_ADD_ITEM_INFO`
+  - Origem: valores default internos (requer feature `complementary_business_attr` ativa)
+
+**customsProcedure (Regime Aduaneiro)**
+- Implementacao nao encontrada no codigo-fonte disponivel
+
+**tariffAgreementCode (Codigo de Acordo Tarifario)**
+- Implementacao nao encontrada no codigo-fonte disponivel
+
+**productTaxGroup (Grupo Fiscal do Produto)**
+- Implementacao nao encontrada no codigo-fonte disponivel
+
+---
+
+## Tabelas de Customizing Relevantes
+
+| Tabela | Conteudo |
+|--------|----------|
+| `J_1BSERVASSIGN2` | Atribuicao de tipo de servico por material + jurisdicao |
+| `J_1BSERVTYPES1` | Tipos de servico BR — entrada (MM), contem campo `ABRASF` |
+| `J_1BSERVTYPES2` | Tipos de servico BR — saida (SD), contem campo `CLISTSERV` |
+| `LOGBR_TAX_CLFN` | Classificacao fiscal por material + data de vigencia |
+| `LOGBR_REINF_DET` | Determinacao REINF por material (cessao de mao de obra) |
+| `TXS_MM_CPRB_BR` | CPRB — relevancia por fornecedor/material/ABRASF (MM) |
+| `TXS_SD_CPRB_BR` | CPRB — relevancia por empresa/material/CNAE/NCM (SD) |
