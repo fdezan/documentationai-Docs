@@ -4,11 +4,10 @@ description: >-
   16 campos de informacao adicional do item TXS — origem do material, usage,
   CPRB, subcontratacao, labor contract. Classe CL_TXS_ADDITIONAL_ITEM_INFO_BR.
 ---
-
 Referencia de debug para os campos da estrutura `TXS_ADDIT_ITEM_INFORMATION`.
 Para cada campo do payload: metodo de debug, cenario (MM/SD/STO/Servico) e origem do dado.
 
-Classe: **CL_TXS_ADDITIONAL_ITEM_INFO_BR**
+Classe: **CL\_TXS\_ADDITIONAL\_ITEM\_INFO\_BR**
 
 Todos os valores verificados contra codigo-fonte ABAP.
 
@@ -19,7 +18,9 @@ Todos os valores verificados contra codigo-fonte ABAP.
 Quantidade Comercial.
 
 **Material:**
+
 - Metodo: `GET_COMMERCIAL_QUANTITY`
+
 - Origem: pricing context — so envia quando unidade tributavel difere da comercial
 
 ---
@@ -29,11 +30,15 @@ Quantidade Comercial.
 Origem do Material (nacional, importado, etc.).
 
 **Material:**
+
 - Metodo: `GET_MATERIAL_ORIGIN`
+
 - Origem: campo `MTORG` do item
 
 **STO:**
+
 - Metodo: `GET_MATERIAL_ORIGIN_STO`
+
 - Origem: dados do material na planta fornecedora
 
 ---
@@ -43,11 +48,15 @@ Origem do Material (nacional, importado, etc.).
 Producao Propria (flag indicando se o material e de fabricacao propria).
 
 **Material (SD):**
+
 - Metodo: `GET_MATERIAL_OWN_PRODUCTION`
-- Origem: campo `OWNPR` do item — flag yes/no
+
+- Origem: campo `OWNPR` do item — flag yes/nom
 
 **STO (outgoing):**
+
 - Metodo: `GET_MATERIAL_OWN_PRODUCT_STO`
+
 - Origem: dados do material na planta fornecedora
 
 ---
@@ -57,7 +66,9 @@ Producao Propria (flag indicando se o material e de fabricacao propria).
 Producao Propria na Planta de Origem (usado em STO para indicar se o material era de producao propria na planta que enviou).
 
 **STO (incoming, exceto retorno):**
+
 - Metodo: `GET_MAT_OWNPROD_ORIG_PLANT_STO`
+
 - Origem: dados do material na planta fornecedora
 
 ---
@@ -67,15 +78,21 @@ Producao Propria na Planta de Origem (usado em STO para indicar se o material er
 ID de Referencia (chave do documento fiscal de referencia).
 
 **MM:**
+
 - Metodo: `GET_REFERENCE_ID`
+
 - Origem: `CL_TXS_REFERENCE_ID_BR->GET_REFERENCE_ID_MM`
 
 **SD:**
+
 - Metodo: `GET_REFERENCE_ID`
+
 - Origem: `CL_TXS_REFERENCE_ID_BR->GET_REFERENCE_ID_SD`
 
 **STO:**
+
 - Metodo: `GET_REFERENCE_ID_STO`
+
 - Origem: `CL_TXS_REFERENCE_ID_BR->GET_REFERENCE_ID_STO`
 
 ---
@@ -85,7 +102,9 @@ ID de Referencia (chave do documento fiscal de referencia).
 Classificacao Fiscal (codigo de classificacao tributaria do material).
 
 **Material/Servico:**
+
 - Metodo: `GET_TAX_CLASSIFICATION`
+
 - Origem: tabela `LOGBR_TAX_CLFN` — busca por material + data de vigencia
 
 ---
@@ -95,27 +114,39 @@ Classificacao Fiscal (codigo de classificacao tributaria do material).
 Utilizacao do Material (como o material sera utilizado pelo comprador/vendedor).
 
 **Material MM:**
+
 - Metodo: `GET_MATERIAL_USAGE_MM`
+
 - Origem: campo `MTUSE` do item
 
 **Material SD:**
+
 - Metodo: `GET_MATERIAL_USAGE_SD`
+
 - Origem: tax code SD
 
 **STO:**
+
 - Metodo: `GET_MATERIAL_USAGE_STO`
+
 - Origem: material usage da Purchase Order
 
 **Servico MM:**
+
 - Metodo: `GET_SERVICE_USAGE_MM`
+
 - Origem: campo `MTUSE` do item
 
 **Servico SD:**
+
 - Metodo: `GET_SERVICE_USAGE_SD`
+
 - Origem: campo `MTUSE` do item
 
 **Servico Frete:**
+
 - Metodo: `GET_SERVICE_USAGE_FREIGHT`
+
 - Origem: `EKPO-J_1BMATUSE`
 
 ---
@@ -125,23 +156,33 @@ Utilizacao do Material (como o material sera utilizado pelo comprador/vendedor).
 Finalidade de Utilizacao (detalha o proposito fiscal da utilizacao do material).
 
 **Material MM:**
+
 - Metodo: `GET_MATERIAL_USAGE_PURPOSE_MM`
+
 - Origem: material usage + tax code
 
 **Material SD:**
+
 - Metodo: `GET_MATERIAL_USAGE_PURPOSE_SD`
+
 - Origem: document type + item category + tax code
 
 **STO (incoming):**
+
 - Metodo: `GET_MATERIAL_USAGE_PURPOSE_MM`
+
 - Origem: material usage + tax code
 
 **Servico MM:**
+
 - Metodo: `GET_SERVICE_USAGE_PURPOSE_MM`
+
 - Origem: campo `MTUSE`
 
 **Servico SD:**
+
 - Metodo: `GET_SERVICE_USAGE_PURPOSE_SD`
+
 - Origem: document type + item category + tax code
 
 ---
@@ -151,7 +192,9 @@ Finalidade de Utilizacao (detalha o proposito fiscal da utilizacao do material).
 Subcontratacao (indica se o item e componente ou item principal em cenario de subcontratacao).
 
 **Material (quando subcontratacao):**
+
 - Metodo: `GET_SUBCONTRACTING_INFO`
+
 - Origem: contexto do documento de material — retorna `component` ou `mainitem`
 
 ---
@@ -161,11 +204,15 @@ Subcontratacao (indica se o item e componente ou item principal em cenario de su
 Cessao de Mao de Obra (indica se o servico envolve cessao de mao de obra, relevante para REINF).
 
 **Servico MM:**
+
 - Metodo: `GET_SERVICE_LABOR_CONTRACT_MM`
+
 - Origem: tabela `LOGBR_REINF_DET` — flag REINF do material
 
 **Servico SD:**
+
 - Metodo: `GET_SERVICE_LABOR_CONTRACT_SD`
+
 - Origem: tax code SD (verifica se e `serv_rend_issqn_labor_contrct`)
 
 ---
@@ -175,15 +222,21 @@ Cessao de Mao de Obra (indica se o servico envolve cessao de mao de obra, releva
 Contribuicao Previdenciaria sobre Receita Bruta (indica se o item e relevante para CPRB).
 
 **Material SD:**
+
 - Metodo: `GET_MATERIAL_CPRB_RELEVANT`
+
 - Origem: tabela `TXS_SD_CPRB_BR`
 
 **Servico MM:**
+
 - Metodo: `GET_SERVICE_CPRB_RELEVANT_MM`
+
 - Origem: tabela `TXS_MM_CPRB_BR`
 
 **Servico SD:**
+
 - Metodo: `GET_SERVICE_CPRB_RELEVANT_SD`
+
 - Origem: tabela `TXS_SD_CPRB_BR`
 
 ---
@@ -193,7 +246,9 @@ Contribuicao Previdenciaria sobre Receita Bruta (indica se o item e relevante pa
 Transacao Comercial.
 
 **SD (default):**
+
 - Metodo: `APPEND_DEFAULT_ADD_ITEM_INFO`
+
 - Origem: valores default internos (requer feature `complementary_business_attr` ativa)
 
 ---
@@ -224,10 +279,17 @@ Implementacao nao encontrada no codigo-fonte disponivel.
 
 ## Tabelas de Customizing Relevantes
 
-- **J_1BSERVASSIGN2** — Atribuicao de tipo de servico por material + jurisdicao
-- **J_1BSERVTYPES1** — Tipos de servico BR — entrada (MM), contem campo `ABRASF`
-- **J_1BSERVTYPES2** — Tipos de servico BR — saida (SD), contem campo `CLISTSERV`
-- **LOGBR_TAX_CLFN** — Classificacao fiscal por material + data de vigencia
-- **LOGBR_REINF_DET** — Determinacao REINF por material (cessao de mao de obra)
-- **TXS_MM_CPRB_BR** — CPRB — relevancia por fornecedor/material/ABRASF (MM)
-- **TXS_SD_CPRB_BR** — CPRB — relevancia por empresa/material/CNAE/NCM (SD)
+- **J\_1BSERVASSIGN2** — Atribuicao de tipo de servico por material + jurisdicao
+
+- **J\_1BSERVTYPES1** — Tipos de servico BR — entrada (MM), contem campo `ABRASF`
+
+- **J\_1BSERVTYPES2** — Tipos de servico BR — saida (SD), contem campo `CLISTSERV`
+
+- **LOGBR\_TAX\_CLFN** — Classificacao fiscal por material + data de vigencia
+
+- **LOGBR\_REINF\_DET** — Determinacao REINF por material (cessao de mao de obra)
+
+- **TXS\_MM\_CPRB\_BR** — CPRB — relevancia por fornecedor/material/ABRASF (MM)
+
+- **TXS\_SD\_CPRB\_BR** — CPRB — relevancia por empresa/material/CNAE/NCM (SD)
+
