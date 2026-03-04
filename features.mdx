@@ -1,0 +1,125 @@
+---
+title: Core Features
+description: Explore the essential tools in Dezan that enable effective documentation management and collaboration for your projects.
+---
+
+## Overview
+
+Dezan provides powerful features for creating, organizing, and collaborating on your project documentation. You can build rich documents with markdown support, share them securely with teams, structure content using folders and tags, and track changes through version history. These core tools streamline your workflow from initial draft to final publication.
+
+<Columns cols={2}>
+  <Card title="Document Creation" icon="edit-3" href="#document-creation">
+    Format content with markdown, embeds, and custom components.
+  </Card>
+  <Card title="Collaboration" icon="users" href="#collaboration">
+    Invite team members and share links with permissions.
+  </Card>
+  <Card title="Organization" icon="folder" href="#organization">
+    Use folders and tags to keep docs structured.
+  </Card>
+  <Card title="Version History" icon="git-branch" href="#version-history">
+    Track revisions and restore previous versions.
+  </Card>
+</Columns>
+
+## Document Creation and Formatting
+
+Start by creating new documents directly in Dezan's editor. You access the creation interface from the dashboard.
+
+<Steps>
+  <Step title="Create New Document" icon="plus">
+    Click the `+ New Document` button in the sidebar.
+
+    Select a template or start blank.
+  </Step>
+  <Step title="Format Content" icon="type">
+    Use the markdown editor for headings, lists, and code blocks.
+
+````markdown
+# Welcome to Dezan
+
+## Quick Start
+
+- Install via `npm install`
+- Configure your `{API_KEY}`
+````
+  </Step>
+  <Step title="Add Components" icon="components">
+    Embed images, videos, or interactive elements like tabs.
+  </Step>
+</Steps>
+
+<Callout kind="tip">
+  Preview your document in real-time as you edit to ensure formatting looks correct across devices.
+</Callout>
+
+## Collaboration and Sharing Options
+
+Invite team members or generate shareable links with fine-grained permissions.
+
+<Tabs>
+  <Tab title="Team Invites" icon="users">
+    Add collaborators via email.
+
+    <CodeGroup tabs="API,CLI">
+```javascript
+// Invite via API
+await fetch('https://api.dezan.com/v1/invites', {
+  method: 'POST',
+  body: JSON.stringify({
+    email: 'team@company.com',
+    role: 'editor'
+  })
+});
+```
+```bash
+dezan invite team@company.com --role editor
+```
+    </CodeGroup>
+  </Tab>
+  <Tab title="Public Links" icon="link">
+    Generate read-only or editable links.
+
+    Set expiration dates and password protection for sensitive docs.
+  </Tab>
+</Tabs>
+
+## Organization with Folders and Tags
+
+Keep your documentation structured without losing track of content.
+
+| Feature | Description | Use Case |
+|---------|-------------|----------|
+| Folders | Nested hierarchy up to 10 levels deep | Project > Module > API Reference |
+| Tags | Custom labels with colors | `wip`, `published`, `api-v2` |
+| Search | Full-text across all docs | Find by keyword or tag |
+
+<ParamField path="folderId" param-type="string" required="true">
+  Parent folder identifier for new documents.
+</ParamField>
+
+<ParamField query="tags" param-type="array" required="false">
+  Comma-separated tags like `feature,docs`.
+</ParamField>
+
+## Version History and Revisions
+
+Dezan automatically saves versions as you edit. View the full history and restore any point.
+
+<Expandable title="Advanced Version Controls" default-open="false">
+  Compare diffs between versions side-by-side.
+
+  ```javascript
+  // Fetch version history via API
+  const history = await fetch('https://api.dezan.com/v1/docs/{docId}/history');
+  const versions = await history.json();
+  ```
+  
+  Use labels like `v1.0-release` for key milestones.
+</Expandable>
+
+<Callout kind="success">
+  Enable notifications for version changes to stay updated on team edits.
+</Callout>
+
+These features work together to make Dezan your central hub for project documentation. Explore the [quickstart](/quickstart) for hands-on setup.

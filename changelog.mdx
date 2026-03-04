@@ -1,0 +1,122 @@
+---
+title: Changelog
+description: Review the latest updates, new features, and improvements in Dezan to stay informed about platform enhancements.
+---
+
+## Latest Updates
+
+<Callout kind="info">
+  Check this changelog regularly to stay updated on Dezan's new features, bug fixes, and improvements. Each release includes detailed notes on changes that affect your documentation workflows.
+</Callout>
+
+Dezan releases follow semantic versioning. Major versions introduce breaking changes, minor versions add features, and patch versions fix bugs.
+
+## Recent Releases
+
+<Update label="2024-10-15" description="v1.2.0" tags={["feature", "improvement"]}>
+
+## New Features
+
+- Added real-time collaboration for shared documentation editing
+- Introduced advanced search with full-text indexing and filters
+
+## Improvements
+
+- Enhanced performance for large documentation sites with lazy loading
+- Improved UI responsiveness on mobile devices
+
+## Bug Fixes
+
+- Fixed markdown rendering issues with nested lists
+- Resolved authentication token refresh problems
+
+</Update>
+
+<Update label="2024-09-20" description="v1.1.0" tags={["feature", "bugfix"]}>
+
+## New Features
+
+- Integrated version history with diff viewer for pages
+- Added export options for PDF and HTML formats
+
+## Bug Fixes
+
+- Corrected image upload failures in certain browsers
+- Fixed sidebar navigation collapse on resize
+
+## Deprecations
+
+- Legacy shortcodes API deprecated; migrate to new components
+
+</Update>
+
+<Update label="2024-08-10" description="v1.0.0" tags={["breaking", "feature"]}>
+
+## Initial Release
+
+- Core documentation management with MDX support
+- User authentication and role-based access control
+- Customizable themes and branding options
+
+## Breaking Changes
+
+- Initial setup requires new configuration format
+
+</Update>
+
+## Upgrade Instructions
+
+Follow these steps to upgrade Dezan to the latest version.
+
+<Steps>
+  <Step title="Backup Your Data" icon="database">
+
+    Create a full backup of your documentation repository.
+
+  </Step>
+  <Step title="Update Package" icon="download">
+
+    <CodeGroup tabs="npm,yarn">
+    ````bash
+    npm install dezan@latest
+    ````
+
+    ````bash
+    yarn add dezan@latest
+    ````
+    </CodeGroup>
+
+  </Step>
+  <Step title="Run Migrations" icon="settings">
+
+    Execute the migration command:
+
+    ````bash
+    dezan migrate
+    ````
+
+  </Step>
+  <Step title="Restart Server" icon="refresh-cw">
+
+    Restart your Dezan instance to apply changes.
+
+  </Step>
+</Steps>
+
+<Callout kind="tip">
+  After upgrading, review the [migration guide](/introduction#upgrading) for any required manual steps.
+</Callout>
+
+## Next Steps
+
+<Columns cols={3}>
+  <Card title="Quickstart" icon="zap" href="/quickstart">
+    Get started with Dezan in minutes.
+  </Card>
+  <Card title="Authentication" icon="shield" href="/authentication">
+    Secure your documentation space.
+  </Card>
+  <Card title="Customization" icon="settings" href="/introduction">
+    Learn advanced configuration options.
+  </Card>
+</Columns>
