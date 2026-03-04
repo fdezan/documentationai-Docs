@@ -773,7 +773,7 @@ Tabela consolidada de todos os pontos de debug para as fases de request, organiz
 | 10 | `CL_TXS_OPERATION_NATURE_BR::GET_OPERATION_NATURE_CODE_MM` | 3.2 | Tax code, mvt type, MIRO event -> operation nature | Compra com nature errado (ex: P vs PI) |
 | 11 | `CL_TXS_ITEMS_BR::GET_UNIT_PRICE` | 3.3 | `unit_price` resultado, despacho MM vs SD | Preco base zero ou incorreto |
 | 12 | `CL_TXS_ITEMS_BR::GET_QUANTITY` | 3.3 | `result` (quantidade), feature toggle MAA, fallback MGAME | Quantidade zero ou incorreta |
-| 13 | `CL_TXS_ITEM_CLASSIFICATIONS_BR::GET_MATERIAL_NCM` | 3.3 | `isc_code` -- NCM 8 digitos sem pontos | NCM vazio, formato errado (pontos, < 8 digitos) |
+| 13 | `CL_TXS_ITEM_CLASSIFICATIONS_BR::GET_MATERIAL_NCM` | 3.3 | `isc_code` -- NCM 8 digitos sem pontos | NCM vazio, formato errado (pontos, &lt; 8 digitos) |
 | 14 | `CL_TXS_ADDITIONAL_ITEM_INFO_BR::GET_MATERIAL_ORIGIN` | 3.3 | `KOMP-MTORG` (J_1BMATORG) | Origem do material ausente |
 | 15 | `CL_TXS_COST_INFORMATION_BR::APPEND_COST_INFORMATION` | 3.3 | Custos: discount, freight, insurance, otherExpenses. STO = skip | Custos acessorios zerados ou ausentes |
 | 16 | `CL_TXS_LOCATIONS_BR::ADD_LOCATIONS` | 3.4 | Cenario (MM/SD/STO), `_locations[]` com type, state, country | UF incorreta, falta ship_from/to, endereco errado |
