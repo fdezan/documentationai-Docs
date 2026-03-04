@@ -1,0 +1,494 @@
+---
+title: "TXS Payload — Parties e Registros Fiscais"
+description: "Documento de referencia para consultores SAP -- origem e debug de parceiros fiscais no payload TXS"
+---
+
+<Callout kind="info">
+Documento de referencia para consultores SAP -- origem e debug de parceiros fiscais no payload TXS
+</Callout>
+
+
+**Versao**: 1.0 | **Data**: 2026-03-03
+**Fontes primarias**: `cl_txs_party_br.abap`, `if_txs_constants_br.abap`, `cl_txs_internal_codes.abap`
+
+---
+
+## Visao Geral
+
+A estrutura `TXS_PARTY` representa os parceiros de negocio (business partners) no payload enviado ao Tax Service (motor externo de calculo de impostos). Cada party carrega consigo uma tabela de **tax registrations** -- registros fiscais como CNPJ, Inscricao Estadual, CNAE, status de contribuinte, etc.
+
+O Brasil possui mais de 20 tipos diferentes de registros fiscais enviados ao TXS, o que torna o bloco `parties` uma das partes mais complexas e mais propensas a erros do payload. Problemas comuns incluem CNAE vazio, IE incorreta, status de contribuinte divergente, e SUFRAMA ausente.
+
+A classe responsavel pela montagem das parties no Brasil e `CL_TXS_PARTY_BR`, que herda de `CL_TXS_PARTY` e implementa o metodo `APPEND_PARTY` com a logica especifica por cenario (MM Material, MM Servico, MM Frete, SD Material, SD Servico, STO, Importacao).
+
+---
+
+## 1. Estrutura: TXS_PARTY
+
+Estrutura DDIC que representa um parceiro na transacao fiscal.
+(Fonte: `txs_party.abap:1-11`)
+
+| Campo | Tipo ABAP | Descricao |
+|---|---|---|
+| `id` | `abap.string(0)` | Identificador sequencial da party (1, 2, 3...) |
+| `role` | `abap.string(0)` | Papel na transacao (SHIP_FROM, SHIP_TO, CONTRACT_FROM, CONTRACT_TO, SERVICE_LOCATION) |
+| `tax_registration` | `txs_tax_registration_tty` | Tabela de registros fiscais (tipo tabela de TXS_TAX_REGISTRATION) |
+
+**Annotation**: `@AbapCatalog.enhancement.category : #EXTENSIBLE_ANY`
+
+**Builder**: `CL_TXS_PARTY_BR` (herda de `CL_TXS_PARTY`)
+(Fonte: `cl_txs_party_br.abap:1-4`)
+
+---
+
+## 2. Estrutura: TXS_TAX_REGISTRATION
+
+Estrutura DDIC que representa um registro fiscal individual dentro de uma party.
+(Fonte: `txs_tax_registration.abap:1-12`)
+
+| Campo | Tipo ABAP | Descricao |
+|---|---|---|
+| `location_type` | `abap.string(0)` | Tipo de localizacao (SHIP_FROM, SHIP_TO, CONTRACT_FROM, etc.) |
+| `tax_number` | `abap.string(0)` | Valor numerico/alfanumerico do registro (ex: CNPJ, IE, "Yes", "No") |
+| `tax_number_type_code` | `abap.string(0)` | Codigo do tipo de registro (ex: CNPJ, IE, ICMSContributor) |
+
+**Annotation**: `@AbapCatalog.enhancement.category : #EXTENSIBLE_ANY`
+
+<Callout kind="info">
+**Nota**: No nivel generico (nao-BR), existe a constante `TAX_NUMBER_TYPE_CODE_VAT = '1'` para VAT generico.
+(Fonte: `if_txs_constants.abap:125`)
+No Brasil, os `tax_number_type_code` sao textuais e definidos como constantes em `CL_TXS_PARTY_BR`.
+</Callout>
+
+
+---
+
+## 3. Tax Number Types BR -- Tabela Completa
+
+Esta e a tabela critica do documento. Lista **todos** os tipos de registro fiscal enviados ao TXS para o Brasil, com suas origens de dados e metodos de resolucao.
+
+Os valores de `tax_number_type_code` sao definidos na constante `con_tax_values_type` de `CL_TXS_PARTY_BR`.
+(Fonte: `cl_txs_party_br.abap:9-30`)
+
+Os internal codes correspondentes estao em `CL_TXS_INTERNAL_CODES=>api_tax_registration`.
+(Fonte: `cl_txs_internal_codes.abap:281-306`)
+
+### 3.1 Registros de Identificacao
+
+| tax_number_type_code | Internal Code | Significado | Metodo Builder | Fonte SAP (Tabela.Campo) | Debug Point |
+|---|---|---|---|---|---|
+| `CNPJ` | `API_TAX_REGISTRATION_CNPJ` | CNPJ da empresa | `GET_VALUE_CNPJ` | LFA1-STCD1 (vendor) / KNA1-STCD1 (customer) / `CL_TXS_DAO_BR=>GET_PLANT_DATA` (plant) | `CL_TXS_PARTY_BR=>GET_VALUE_CNPJ` (linha 1876) |
+| `CPF` | `API_TAX_REGISTRATION_CPF` | CPF pessoa fisica | `GET_VALUE_CPF` | LFA1-STCD2 (vendor) / KNA1-STCD2 (customer) | `CL_TXS_PARTY_BR=>GET_VALUE_CPF` (linha 1931) |
+| `IE` | `API_TAX_REGISTRATION_STATE_INSCRIPTION` | Inscricao Estadual | `GET_VALUE_IE` | LFA1-STCD3 (vendor) / KNA1-STCD3 (customer) / J_1BBRANCH-STATE_INSC (plant) | `CL_TXS_PARTY_BR=>GET_VALUE_IE` (linha 1977) |
+| `IM` | `API_TAX_REGISTRATION_CITY_INSCRIPTION` | Inscricao Municipal | `GET_VALUE_IM` | LFA1-STCD4 (vendor) / KNA1-STCD4 (customer) / J_1BBRANCH-MUNIC_INSC (plant) | `CL_TXS_PARTY_BR=>GET_VALUE_IM` (linha 1986) |
+| `IBGECode` | `API_TAX_REGISTRATION_IBGE_CODE` | Codigo IBGE do municipio | `GET_VALUE_IBGE_CODE` | LFA1-TXJCD (vendor) / KNA1-TXJCD (customer) / SADR-TXJCD (plant address) | `CL_TXS_PARTY_BR=>GET_VALUE_IBGE_CODE` (linha 1966) |
+
+<Callout kind="info">
+**Nota sobre CPF**: O valor real do CPF e ofuscado no payload. O metodo `GET_VALUE_CPF` sempre envia o valor constante `OBFUSCATED_CPF = '99999999999'` por questoes de privacidade (LGPD).
+(Fonte: `cl_txs_party_br.abap:307,1932`)
+</Callout>
+
+
+### 3.2 Registros Fiscais Especiais
+
+| tax_number_type_code | Internal Code | Significado | Metodo Builder | Fonte SAP | Debug Point |
+|---|---|---|---|---|---|
+| `CNAE` | `API_TAX_REGISTRATION_CNAE` | Codigo CNAE da atividade economica | `GET_VALUE_CNAE` | Dados mestre: `LFA1-CNAE` (vendor), `KNA1-CNAE` (customer), `J_1BBRANCH-CNAE` (plant). ~~BRF+ descontinuado no TXS~~ | `CL_TXS_PARTY_BR=>GET_VALUE_CNAE` (linha 1867) |
+| `CPOM` | `API_TAX_REGISTRATION_CPOM` | Cadastro Prestador Outro Municipio | `GET_VALUE_CPOM` | `CL_TXS_DAO_BR=>SELECT_CPOM_FOR_PLANT` (LOGBR_CPOM_PLNT) / `CL_TXS_DAO_BR=>SELECT_CPOM_FOR_SUPPLIER` (LOGBR_CPOM_VNDR) | `CL_TXS_PARTY_BR=>GET_VALUE_CPOM` (linha 1944) |
+| `SUFRAMA` | `API_TAX_REGISTRATION_SUFRAMA` | Codigo SUFRAMA (Zona Franca) | `GET_VALUE_SUFRAMA` | Dados mestre: `J_1BBRANCH-SUFRAMA` (plant), `KNA1-SUFRAMA` (customer). ~~BRF+ descontinuado no TXS~~ | `CL_TXS_PARTY_BR=>GET_VALUE_SUFRAMA` (linha 2018) |
+| `legalNature` | `API_TAX_REGISTRATION_LEGAL_NATURE` | Natureza juridica da empresa | `GET_VALUE_LEGAL_NATURE` | LFA1-LEGALNAT (vendor) / KNA1-LEGALNAT (customer) / J_1BBRANCH-LEGALNAT (plant) | `CL_TXS_PARTY_BR=>GET_VALUE_LEGAL_NATURE` (linha 2009) |
+| `companySize` | `API_TAX_REGISTRATION_COMPANY_SIZE` | Porte da empresa | `GET_VALUE_COMPANY_SIZE` | LFA1-COMSIZE (vendor) / KNA1-COMSIZE (customer) | `CL_TXS_PARTY_BR=>GET_VALUE_COMPANY_SIZE` (linha 1887) |
+| `taxDeclarationType` | `API_TAX_REGISTRATION_DECLARATION_TYPE` | Tipo de declaracao fiscal (Lucro Real / Presumido / Simples) | `GET_VALUE_TAX_DECLARATION_TYPE` | LFA1-TDT / KNA1-TDT / J_1BBRANCH-TDT | `CL_TXS_PARTY_BR=>GET_VALUE_TAX_DECLARATION_TYPE` (linha 2034) |
+| `taxRegimenCode` | `API_TAX_REGISTRATION_REGIMEN_CODE` | Regime tributario (CRTN) | `GET_VALUE_TAX_REGIMENT_CODE` | LFA1-CRTN (vendor) / KNA1-CRTN (customer) / J_1BBRANCH-CRTN (plant) | `CL_TXS_PARTY_BR=>GET_VALUE_TAX_REGIMENT_CODE` (linha 2074) |
+| `IPITaxSplit` | `API_TAX_REGISTRATION_IPI_SPLIT` | Split de IPI do fornecedor | -- | -- | -- |
+| `isNaturalPerson` | `API_TAX_REGISTRATION_IS_NATURAL_PERSON` | Indica se e pessoa fisica | `GET_VALUE_IS_NATURAL_PERSON` | BP_DATA-NATPERS (via `CL_TXS_FM_BUSINESS_PARTNER=>GET_BUSINESS_PARTNER_DATA`) | `CL_TXS_PARTY_BR=>GET_VALUE_IS_NATURAL_PERSON` (linha 1995) |
+| `industrialEquivalent` | `API_TAX_REGISTRATION_INDUSTRIAL_EQUIVALENT` | Equiparado a industria | `GET_INDUSTRIAL_EQUIVALENT` | BUS_TB071 (tax_type = BR07, tax_group = 0/1) | `CL_TXS_PARTY_BR=>GET_INDUSTRIAL_EQUIVALENT` (linha 420) |
+| `consolidatedPCCWHT` | `API_TAX_REGISTRATION_CONSOLIDATED_PCC_WHT` | WHT PCC consolidado | `GET_VALUE_CONSOLIDATED_PCC_WHT` | `CL_TXS_BP_SUPPLIER_BR=>IS_CONSOLIDATED_PCC_WHT` | `CL_TXS_PARTY_BR=>GET_VALUE_CONSOLIDATED_PCC_WHT` (linha 1922) |
+
+### 3.3 Status de Contribuinte
+
+Todos os registros de contribuinte usam o mesmo metodo `GET_VALUE_TAX_CONTRIBUTOR`, que recebe o `tax_number_type_code` e o valor ("Yes"/"No" via internal codes).
+
+Para **vendors/customers**: o status vem da tabela `BUS_TB071` (Tax Classifications do Business Partner), consultada via `GET_BP_TAX_CONTRIBUTOR`.
+(Fonte: `cl_txs_party_br.abap:332-350`)
+
+Para **plants**: o status vem diretamente dos campos da `J_1BBRANCH`, consultado via `GET_PLANT_TAX_CONTRIBUTOR`.
+(Fonte: `cl_txs_party_br.abap:1067-1077`)
+
+| tax_number_type_code | Internal Code | Imposto | BP Tax Type | Fonte Plant | Fonte BP |
+|---|---|---|---|---|---|
+| `ICMSContributor` | `API_TAX_REGISTRATION_ICMS_CONTRIBUTOR` | ICMS | BR01 | J_1BBRANCH-ICMSCONTRIBUTOR | BUS_TB071 (tax_type = BR01) |
+| `ICMSSTContributor` | `API_TAX_REGISTRATION_ICMS_ST_CONTRIBUTOR` | ICMS-ST | BR06 | J_1BBRANCH-ICMSSTCONTRIBUTOR | BUS_TB071 (tax_type = BR06) |
+| `IPIContributor` | `API_TAX_REGISTRATION_IPI_CONTRIBUTOR` | IPI | BR02 | J_1BBRANCH-IPICONTRIBUTOR | BUS_TB071 (tax_type = BR02) |
+| `PISContributor` | `API_TAX_REGISTRATION_PIS_CONTRIBUTOR` | PIS | BR03 | J_1BBRANCH-PISCONTRIBUTOR | BUS_TB071 (tax_type = BR03) |
+| `COFINSContributor` | `API_TAX_REGISTRATION_COFINS_CONTRIBUTOR` | COFINS | BR04 | J_1BBRANCH-COFINSCONTRIBUTOR | BUS_TB071 (tax_type = BR04) |
+| `ISSContributor` | `API_TAX_REGISTRATION_ISS_CONTRIBUTOR` | ISS | BR05 | J_1BBRANCH-ISSCONTRIBUTOR | BUS_TB071 (tax_type = BR05) |
+| `CBSContributor` | `API_TAX_REGISTRATION_CBS_CONTRIBUTOR` | CBS | BR09 | -- | BUS_TB071 (tax_type = BR09) |
+| `IBSContributor` | `API_TAX_REGISTRATION_IBS_CONTRIBUTOR` | IBS | BR08 | -- | BUS_TB071 (tax_type = BR08) |
+
+**Debug Point**: `CL_TXS_PARTY_BR=>GET_VALUE_TAX_CONTRIBUTOR` (linha 2027) / `CL_TXS_PARTY_BR=>GET_BP_TAX_CONTRIBUTOR` (linha 332)
+
+---
+
+## 4. BP Tax Types (Constantes)
+
+Constantes `con_bp_tax_type` de `CL_TXS_PARTY_BR` que mapeiam cada imposto brasileiro para seu codigo na tabela de classificacao fiscal do BP (`BUS_TB071`).
+(Fonte: `cl_txs_party_br.abap:32-42`)
+
+| Constante | Valor (`butx_tax_type`) | Imposto |
+|---|---|---|
+| `con_bp_tax_type-icms` | `BR01` | ICMS |
+| `con_bp_tax_type-ipi` | `BR02` | IPI |
+| `con_bp_tax_type-pis` | `BR03` | PIS |
+| `con_bp_tax_type-cofins` | `BR04` | COFINS |
+| `con_bp_tax_type-iss` | `BR05` | ISS |
+| `con_bp_tax_type-icms_st` | `BR06` | ICMS-ST |
+| `con_bp_tax_type-industrial_equivalent` | `BR07` | Equiparado a Industria |
+| `con_bp_tax_type-ibs` | `BR08` | IBS (Reforma Tributaria) |
+| `con_bp_tax_type-cbs` | `BR09` | CBS (Reforma Tributaria) |
+
+**Tax Group** (`con_bp_tax_group`): `'0'` = Nao, `'1'` = Sim
+(Fonte: `cl_txs_party_br.abap:44-47`)
+
+---
+
+## 5. Company Size Mapping
+
+Mapeamento do porte da empresa: valor SAP (LFA1/KNA1-COMSIZE) para valor convertido enviado ao TXS via internal codes.
+(Fonte: `cl_txs_party_br.abap:49-64`)
+
+| Valor SAP (`J_1BCOMSIZE`) | Constante SAP | Valor TXS (Deprecated) | Internal Code |
+|---|---|---|---|
+| `GP` | `con_bp_company_size-large_company` | `GE` (grande empresa) | `API_COMPANY_SIZE_LARGE_COMPANY` |
+| `ME` | `con_bp_company_size-micro_company` | `ME` (microempresa) | `API_COMPANY_SIZE_MICRO_COMPANY` |
+| `MI` | `con_bp_company_size-micro_company_ind` | `MEI` (microempreendedor individual) | `API_COMPANY_SIZE_MICRO_COMPANY_IND` |
+| `MP` | `con_bp_company_size-medium_company` | `MDE` (media empresa) | `API_COMPANY_SIZE_MEDIUM_COMPANY` |
+| `PP` | `con_bp_company_size-little_company` | `EPP` (empresa pequeno porte) | `API_COMPANY_SIZE_LITTLE_COMPANY` |
+
+<Callout kind="warning">
+**Nota**: Os valores `con_bp_company_size_conv` (GE, ME, MEI, MDE, EPP) estao marcados como `[DEPRECATED]`. O sistema atual usa `CL_TXS_INTERNAL_CODES=>api_company_size` para obter os valores dinamicamente.
+(Fonte: `cl_txs_party_br.abap:56-64`, `cl_txs_internal_codes.abap:268-274`)
+</Callout>
+
+
+---
+
+## 6. Tax Declaration Type Mapping
+
+Mapeamento do tipo de declaracao fiscal: valor SAP (J_1BTDT) para valor convertido enviado ao TXS.
+(Fonte: `cl_txs_party_br.abap:67-71`, `if_txs_constants_br.abap:181-185`)
+
+| Valor SAP (`J_1BTDT`) | Constante BR | Valor TXS (Deprecated) | Internal Code |
+|---|---|---|---|
+| `LP` | `tax_declaration_type-presumed_profit` | `Presumed Profit` | `API_TAX_DECLARATION_TYPE_PRESUMED_PROFIT` |
+| `LR` | `tax_declaration_type-real_profit` | `Real Profit` | `API_TAX_DECLARATION_TYPE_REAL_PROFIT` |
+| `SN` | `tax_declaration_type-simples_nacional` | `Simples Nacional` | `API_TAX_DECLARATION_TYPE_SIMPLES_NACIONAL` |
+
+<Callout kind="warning">
+**Nota**: Os valores textuais em `con_tax_declaration_type` de `CL_TXS_PARTY_BR` estao marcados como `[DEPRECATED]`. O metodo `GET_VALUE_TAX_DECLARATION_TYPE` (linha 2034) ja usa internal codes para converter o TDT.
+(Fonte: `cl_txs_party_br.abap:67-71`, `cl_txs_internal_codes.abap:262-266`)
+</Callout>
+
+
+---
+
+## 7. Estrutura: TXS_BP_EXEMPTION_DETAIL
+
+Estrutura DDIC para detalhe de isencao de Business Partner.
+(Fonte: `txs_bp_exemption_detail.abap:1-10`)
+
+| Campo | Tipo ABAP | Descricao |
+|---|---|---|
+| `location_type` | `abap.string(0)` | Local onde o produto tem a isencao especificada |
+| `exemptionreasoncode` | `abap.string(0)` | Codigo de classificacao da isencao do produto |
+
+**Annotation**: `@AbapCatalog.enhancement.category : #EXTENSIBLE_ANY`
+
+**Builder**: `CL_TXS_BP_EXEMPTIONS_BR` (herda de `CL_TXS_BP_EXEMPTIONS`)
+(Fonte: `cl_txs_bp_exemptions_br.abap:1-21`)
+
+<Callout kind="info">
+**Nota importante**: A implementacao atual de `CL_TXS_BP_EXEMPTIONS_BR` tem o metodo `ADD_BP_EXEMPTIONS` **vazio** (sem logica). Isso significa que, no momento, isencoes de BP nao sao enviadas ao TXS pelo builder standard. Customizacoes via BAdI podem ser necessarias para cenarios de isencao.
+(Fonte: `cl_txs_bp_exemptions_br.abap:19-20`)
+</Callout>
+
+
+---
+
+## 8. Location Types (Tipos de Localizacao)
+
+Os location types definem o papel de cada party na transacao. Sao resolvidos dinamicamente via `CL_TXS_INTERNAL_CODES=>api_location_type`.
+(Fonte: `cl_txs_internal_codes.abap:183-192`)
+
+| Internal Code | Valor | Descricao | Usado em |
+|---|---|---|---|
+| `API_LOCATION_TYPE_SHIP_FROM` | SHIP_FROM | Origem da mercadoria | MM Material, SD Material, STO |
+| `API_LOCATION_TYPE_SHIP_TO` | SHIP_TO | Destino da mercadoria | MM Material, SD Material, STO |
+| `API_LOCATION_TYPE_CONTRACT_FROM` | CONTRACT_FROM | Prestador do servico | MM Servico, SD Servico, MM Frete |
+| `API_LOCATION_TYPE_CONTRACT_TO` | CONTRACT_TO | Tomador do servico | MM Servico, SD Servico, MM Frete, SD Third Party |
+| `API_LOCATION_TYPE_SERVICE_LOCATION` | SERVICE_LOCATION | Local de execucao do servico | MM Servico, SD Servico |
+| `API_LOCATION_TYPE_BILL_TO` | BILL_TO | Endereco de cobranca | (reservado) |
+| `API_LOCATION_TYPE_SOLD_TO` | SOLD_TO | Comprador | (reservado) |
+| `API_LOCATION_TYPE_PAYER` | PAYER | Pagador | (reservado) |
+
+---
+
+## 9. Cenarios por Aplicacao
+
+### 9.1 Decisao Principal: APPEND_PARTY
+
+O metodo `APPEND_PARTY` (linha 315) decide qual fluxo seguir:
+(Fonte: `cl_txs_party_br.abap:315-329`)
+
+```
+SE is_stock_transfer:
+  -> GET_STO_PARTIES
+SENAO SE is_import_of_goods:
+  -> GET_IMPORT_OF_GOODS_PARTIES
+SENAO:
+  CASE application:
+    taxes (MM) -> GET_MM_PARTIES
+    sales_and_distribution (SD) -> GET_SD_PARTIES
+```
+
+### 9.2 MM Material
+
+**Metodo**: `GET_MM_MATERIAL_PARTIES` (linha 448)
+**Parties geradas**: 2
+
+| Party | Role | Builder | Registros Incluidos |
+|---|---|---|---|
+| SHIP_FROM | Vendor (LFA1) ou Plant (cenarios especiais) | `GET_MM_MATERIAL_SHIP_FROM` (linha 566) | CNAE, CNPJ, CPF, isNaturalPerson, COFINSContributor, companySize, IBGECode, ICMSContributor, ICMSSTContributor, IE, IPIContributor, ISSContributor, legalNature, PISContributor, IBSContributor, CBSContributor, taxRegimenCode, taxDeclarationType, industrialEquivalent, Simples Nacional |
+| SHIP_TO | Plant (J_1BBRANCH) ou Vendor (cenarios especiais) | `GET_MM_MATERIAL_SHIP_TO` (linha 583) | CNAE, CNPJ, COFINSContributor, IBGECode, ICMSContributor, ICMSSTContributor, IE, IPIContributor, ISSContributor, legalNature, PISContributor, taxDeclarationType, SUFRAMA |
+
+**Inversao de papeis**: Para transferencia a subcontratado (`IS_TRNSFR_PSTNG_TO_SUBCON`) e retorno de consignacao (`IS_CONSIGNMENT_RETURN`), os papeis se invertem:
+- SHIP_FROM = Plant (em vez de Vendor)
+- SHIP_TO = Vendor (em vez de Plant)
+(Fonte: `cl_txs_party_br.abap:571-595`)
+
+### 9.3 MM Servico
+
+**Metodo**: `GET_MM_SERVICE_PARTIES` (linha 1007)
+**Parties geradas**: 3
+
+| Party | Role | Builder | Registros Incluidos |
+|---|---|---|---|
+| CONTRACT_FROM | Vendor (LFA1) -- prestador | `GET_MM_SERVICE_CONTRACT_FROM` (linha 753) | CNAE, CNPJ, CPF, isNaturalPerson, COFINSContributor, companySize, CPOM, IBGECode, ICMSContributor, ICMSSTContributor, IE, IM, IPIContributor, ISSContributor, legalNature, PISContributor, IBSContributor, CBSContributor, taxRegimenCode, Simples Nacional, consolidatedPCCWHT |
+| CONTRACT_TO | Plant (J_1BBRANCH) -- tomador | `GET_MM_SERVICE_CONTRACT_TO` (linha 913) | CNAE, CNPJ, COFINSContributor, IBGECode, ICMSContributor, ICMSSTContributor, IE, IM, IPIContributor, ISSContributor, legalNature, PISContributor, taxDeclarationType, taxRegimenCode |
+| SERVICE_LOCATION | Endereco de entrega | `GET_MM_SERVICE_SERV_LOCATION` (linha 1014) | IBGECode |
+
+### 9.4 MM Frete
+
+**Metodo**: `GET_MM_FREIGHT_PARTIES` (linha 442)
+**Parties geradas**: 2 (reusa metodos de servico)
+
+| Party | Role | Builder |
+|---|---|---|
+| CONTRACT_FROM | Transportadora (Vendor via partner function) | `GET_MM_SERVICE_CONTRACT_FROM` |
+| CONTRACT_TO | Plant (J_1BBRANCH) | `GET_MM_SERVICE_CONTRACT_TO` |
+
+<Callout kind="info">
+**Nota**: MM Frete usa `CL_TXS_MM_PARTNER_DETERMINER` para encontrar o parceiro correto (transportadora) via partner function.
+(Fonte: `cl_txs_party_br.abap:755-761`)
+</Callout>
+
+
+### 9.5 SD Material
+
+**Metodo**: `GET_SD_MATERIAL_PARTIES` (linha 1080)
+**Parties geradas**: 2 (ou 3 em Third Party)
+
+| Party | Role | Builder | Registros Incluidos |
+|---|---|---|---|
+| SHIP_FROM | Plant (J_1BBRANCH) | `GET_SD_MATERIAL_SHIP_FROM` (linha 1282) | CNAE, SUFRAMA, IE, CNPJ, COFINSContributor, IBGECode, ICMSContributor, ICMSSTContributor, IPIContributor, ISSContributor, legalNature, PISContributor, taxDeclarationType, taxRegimenCode |
+| SHIP_TO | Customer (KNA1) | `GET_SD_MATERIAL_SHIP_CONT_TO` (linha 1111) | CNAE, CNPJ, CPF, isNaturalPerson, COFINSContributor, IBGECode, ICMSContributor, ICMSSTContributor, IPIContributor, ISSContributor, legalNature, PISContributor, taxRegimenCode, IBSContributor, CBSContributor, SUFRAMA, IE |
+| CONTRACT_TO (Third Party) | Customer (KNA1) | `GET_SD_MATERIAL_SHIP_CONT_TO` | Mesmos registros do SHIP_TO |
+
+**Third Party**: Para ordens de venda tipo Third Party (Invoice ou Shipment), uma party adicional com role CONTRACT_TO e gerada.
+(Fonte: `cl_txs_party_br.abap:1084-1098`)
+
+### 9.6 SD Servico
+
+**Metodo**: `GET_SD_SERVICE_PARTIES` (linha 1612)
+**Parties geradas**: 3
+
+| Party | Role | Builder | Registros Incluidos |
+|---|---|---|---|
+| CONTRACT_FROM | Plant (J_1BBRANCH) -- prestador | `GET_SD_SERVICE_CONTRACT_FROM` (linha 1391) | CNAE, CNPJ, COFINSContributor, CPOM, IBGECode, ICMSContributor, ICMSSTContributor, IE, IM, IPIContributor, ISSContributor, legalNature, PISContributor, taxDeclarationType, taxRegimenCode |
+| CONTRACT_TO | Customer (KNA1) -- tomador | `GET_SD_SERVICE_CONTRACT_TO` (linha 1487) | CNAE, CNPJ, CPF, isNaturalPerson, COFINSContributor, IBGECode, ICMSContributor, ICMSSTContributor, IE, IM, IPIContributor, ISSContributor, legalNature, PISContributor, taxRegimenCode, IBSContributor, CBSContributor |
+| SERVICE_LOCATION | Local de execucao | `GET_SD_SERVICE_SERV_LOCATION` (linha 1619) | isNaturalPerson, IBGECode |
+
+### 9.7 STO (Stock Transfer Order)
+
+**Metodo**: `GET_STO_PARTIES` (linha 1647)
+**Parties geradas**: 2
+
+| Party | Role | Builder | Registros Incluidos |
+|---|---|---|---|
+| SHIP_FROM | Plant fornecedora (supplying plant) | `GET_STO_SHIP_FROM` (linha 1653) | CNAE, CNPJ, COFINSContributor, IBGECode, ICMSContributor, ICMSSTContributor, IE, IPIContributor, ISSContributor, legalNature, PISContributor, taxDeclarationType, SUFRAMA |
+| SHIP_TO | Plant receptora (receiving plant) | `GET_STO_SHIP_TO` (linha 1743) | CNAE, CNPJ, COFINSContributor, IBGECode, ICMSContributor, ICMSSTContributor, IE, IPIContributor, ISSContributor, legalNature, PISContributor, taxDeclarationType, SUFRAMA |
+
+<Callout kind="info">
+**Nota STO**: Ambas as parties vem de dados de planta (`CL_TXS_DAO_BR=>GET_PLANT_DATA`), nao de vendor/customer.
+O CNAE vem diretamente de `J_1BBRANCH-CNAE`.
+O SUFRAMA vem diretamente de `J_1BBRANCH-SUFRAMA`.
+(Fonte: `cl_txs_party_br.abap:1653-1854`)
+</Callout>
+
+
+### 9.8 Importacao de Mercadorias
+
+**Metodo**: `GET_IMPORT_OF_GOODS_PARTIES` (linha 407)
+**Parties geradas**: 2
+
+| Party | Role | Builder | Registros Incluidos |
+|---|---|---|---|
+| SHIP_FROM | Vazio (sem registros) | Header apenas | Nenhum (party com role SHIP_FROM mas sem tax_registration) |
+| SHIP_TO | Plant (J_1BBRANCH) | `GET_MM_MATERIAL_SHIP_TO` | Mesmos registros do MM Material SHIP_TO |
+
+---
+
+## 10. Pontos de Debug
+
+### 10.1 Debug Points Primarios
+
+| # | Classe::Metodo | O que verificar | Quando usar |
+|---|---|---|---|
+| 1 | `CL_TXS_PARTY_BR::APPEND_PARTY` (linha 315) | Todas as parties montadas para a transacao; qual fluxo foi escolhido (STO/Import/MM/SD) | Primeiro ponto -- ver payload completo de parties |
+| 2 | `CL_TXS_PARTY_BR::GET_VALUE_CNPJ` (linha 1876) | CNPJ sendo enviado; verificar se `remove_non_digit_chars` esta limpando corretamente | CNPJ errado no payload |
+| 3 | `CL_TXS_PARTY_BR::GET_VALUE_IE` (linha 1977) | Inscricao Estadual; valor vem de STCD3 (vendor/customer) ou STATE_INSC (plant) | IE vazia ou incorreta |
+| 4 | `CL_TXS_CNAE_BR::CNAE_FOR_MM_BP_MAT` | Resolucao CNAE para cenario MM BP Material (~~BRF+ descontinuado no TXS~~ — agora via dados mestre) | CNAE vazio (problema recorrente) |
+| 5 | `CL_TXS_PARTY_BR::GET_VALUE_TAX_CONTRIBUTOR` (linha 2027) | Status de contribuinte (Yes/No) para qualquer imposto | Contribuinte incorreto (J_1BBRANCH ou BUS_TB071) |
+| 6 | `CL_TXS_PARTY_BR::GET_BP_TAX_CONTRIBUTOR` (linha 332) | Leitura da classificacao fiscal do BP na BUS_TB071 | Verificar se tax_group retorna 0 ou 1 |
+| 7 | `CL_TXS_PARTY_BR::GET_VALUE_LEGAL_NATURE` (linha 2009) | Natureza juridica enviada ao TXS | legalNature vazio |
+| 8 | `CL_TXS_PARTY_BR::GET_VALUE_CPOM` (linha 1944) | Status CPOM (Yes/No); busca em LOGBR_CPOM_PLNT ou LOGBR_CPOM_VNDR | ISS com calculo incorreto para servicos intermunicipais |
+| 9 | `CL_TXS_PARTY_BR::GET_VALUE_COMPANY_SIZE` (linha 1887) | Porte da empresa e conversao GP->GE, ME->ME, MI->MEI, MP->MDE, PP->EPP | Regra fiscal dependente de porte |
+| 10 | `CL_TXS_PARTY_BR::GET_VALUE_TAX_DECLARATION_TYPE` (linha 2034) | Tipo de declaracao fiscal (LP/LR/SN convertido) | Simples Nacional nao aplicado |
+
+### 10.2 Debug Points Secundarios
+
+| # | Classe::Metodo | O que verificar |
+|---|---|---|
+| 11 | `CL_TXS_PARTY_BR::GET_VALUE_SUFRAMA` (linha 2018) | Codigo SUFRAMA (zona franca) |
+| 12 | `CL_TXS_PARTY_BR::GET_VALUE_IBGE_CODE` (linha 1966) | Codigo IBGE do municipio (limpa caracteres nao-numericos via regex `\D`) |
+| 13 | `CL_TXS_PARTY_BR::GET_VALUE_CPF` (linha 1931) | CPF ofuscado (sempre `99999999999`) |
+| 14 | `CL_TXS_PARTY_BR::GET_VALUE_IS_NATURAL_PERSON` (linha 1995) | Flag de pessoa fisica (baseado em BP_DATA-NATPERS) |
+| 15 | `CL_TXS_PARTY_BR::GET_INDUSTRIAL_EQUIVALENT` (linha 420) | Equiparado a industria (BR07 na BUS_TB071) |
+| 16 | `CL_TXS_PARTY_BR::GET_VALUE_CONSOLIDATED_PCC_WHT` (linha 1922) | WHT PCC consolidado (apenas MM Servico CONTRACT_FROM) |
+| 17 | `CL_TXS_PARTY_BR::GET_PLANT_INFO` (linha 1055) | Dados da planta (J_1BBRANCH, CNPJ, SADR) -- fonte de muitos registros |
+| 18 | `CL_TXS_SIMPLES_NACIONAL=>GET_CLASSES_AND_RATES` | Classes e aliquotas do Simples Nacional (adicionadas como tax_registration ao vendor) |
+
+---
+
+## 11. Fontes de Dados SAP Referenciadas
+
+### 11.1 Tabelas de Dados Mestres
+
+| Tabela | Descricao | Campos Usados para Parties |
+|---|---|---|
+| `LFA1` | Vendor Master (dados gerais) | STCD1 (CNPJ), STCD2 (CPF), STCD3 (IE), STCD4 (IM), TXJCD (IBGE), LEGALNAT, COMSIZE, TDT, CRTN, CNAE, SUFRAMA, LIFNR |
+| `KNA1` | Customer Master (dados gerais) | STCD1 (CNPJ), STCD2 (CPF), STCD3 (IE), STCD4 (IM), TXJCD (IBGE), LEGALNAT, COMSIZE, CRTN, SUFRAMA, LAND1, KUNNR |
+| `J_1BBRANCH` | Dados fiscais da filial (Brazil) | STATE_INSC (IE), MUNIC_INSC (IM), ICMSCONTRIBUTOR, ICMSSTCONTRIBUTOR, IPICONTRIBUTOR, PISCONTRIBUTOR, COFINSCONTRIBUTOR, ISSCONTRIBUTOR, LEGALNAT, TDT, CRTN, CNAE, SUFRAMA |
+| `BUS_TB071` | Tax Classifications do BP | TAX_CTY (pais), TAX_TYPE (BR01-BR09), TAX_GROUP (0/1) |
+| `SADR` | Enderecos | TXJCD (Tax Jurisdiction Code = IBGE) |
+
+### 11.2 Tabelas de Customizing / Dados Auxiliares
+
+| Tabela | Descricao | Uso |
+|---|---|---|
+| `LOGBR_CPOM_PLNT` | CPOM por planta | Status CPOM para servicos (plant como prestador) |
+| `LOGBR_CPOM_VNDR` | CPOM por vendor | Status CPOM para servicos (vendor como prestador) |
+
+### 11.3 BRF+ / Decisoes via Regra (DESCONTINUADO no TXS)
+
+<Callout kind="warning">
+**DESCONTINUADO**: A SAP descontinuou o uso de BRF+ dentro do Tax Service (TXS). O BRF+ como tecnologia SAP continua funcionando para outros fins, mas o TXS nao utiliza mais BRF+ para determinacao de CNAE e SUFRAMA. Esses valores agora vem diretamente dos dados mestre (LFA1, KNA1, J_1BBRANCH).
+</Callout>
+
+
+| Classe (historico) | Descricao | Status |
+|---|---|---|
+| `CL_TXS_CNAE_BR` | Resolucao CNAE por cenario (MM/SD x BP/Plant x Mat/Serv) | ~~Descontinuado no TXS~~ — CNAE via dados mestre |
+| `CL_TXS_DAO_SUFRAMA_MM_BR` | SUFRAMA para MM | ~~Descontinuado no TXS~~ — SUFRAMA via dados mestre |
+| `CL_TXS_SUFRAMA_DAO_BR` | SUFRAMA para SD | ~~Descontinuado no TXS~~ — SUFRAMA via dados mestre |
+| `CL_TXS_SIMPLES_NACIONAL` | Classes e aliquotas Simples Nacional | -- |
+
+### 11.4 UUIDs dos BRF+ Objects para CNAE (DESCONTINUADO no TXS)
+
+<Callout kind="warning">
+**DESCONTINUADO**: Estes UUIDs nao sao mais utilizados pelo TXS. Mantidos aqui apenas para referencia historica.
+</Callout>
+
+
+(Fonte historica: `if_txs_constants_br.abap:151-166`)
+
+| Cenario | Function UUID | Object UUID |
+|---|---|---|
+| MM BP Material | `40F2E9AFBE791ED9BEE645A291E3B35F` | `40F2E9AFC4E81EE9BFFD29B25363FAF7` |
+| MM BP Servico | `40F2E9AFC4E81EE9BEE60FE305DD0264` | `40F2E9AFC4E81ED9BFFFA4A9627FAC61` |
+| MM Plant Material | `42F2E9AFC3DF1EE9BEE9682ED3C480D1` | `40F2E9AFC4E81EE9BFFD54C7C39AFC04` |
+| MM Plant Servico | `42F2E9AFC3DF1ED9BEE5F70575010958` | `40F2E9AFC4E81ED9BFFFC64253068D12` |
+| SD BP Material | `42F2E9AFC3DF1EEA80CA7F581A8525CF` | `42F2E9AFC3DF1EEA80CA7F581A86A5CF` |
+| SD BP Servico | `42F2E9AFC3DF1EEA80CAF68CE704491B` | `42F2E9AFC3DF1EEA80CAF68CE705A91B` |
+| SD Plant Material | `42F2E9AFC3DF1EEA80CB04DA4A6E49AB` | `42F2E9AFC3DF1EEA80CB04DA4A6FA9AB` |
+| SD Plant Servico | `42F2E9AFC3DF1EEA80CB08FCD325C9B7` | `42F2E9AFC3DF1EEA80CB08FCD32709B7` |
+
+---
+
+## 12. Problemas Comuns e Solucoes
+
+### 12.1 CNAE Vazio
+
+**Sintoma**: Party com `tax_number_type_code = 'CNAE'` ausente ou vazio no payload.
+**Causa**: CNAE nao preenchido nos dados mestre do parceiro ou planta.
+**Debug**: Breakpoint em `CL_TXS_PARTY_BR::GET_VALUE_CNAE` (linha 1867).
+**Solucao**: Preencher CNAE diretamente nos dados mestre: `LFA1-CNAE` (vendor), `KNA1-CNAE` (customer) ou `J_1BBRANCH-CNAE` (plant). ~~BRF+ descontinuado no TXS~~.
+
+### 12.2 Contribuinte Incorreto
+
+**Sintoma**: Imposto calculado como se o BP fosse contribuinte (ou nao contribuinte) quando deveria ser o contrario.
+**Causa**: Tax Classification (BUS_TB071) do BP nao configurada corretamente, ou J_1BBRANCH com valor divergente.
+**Debug**: Breakpoint em `CL_TXS_PARTY_BR::GET_BP_TAX_CONTRIBUTOR` (linha 332). Verificar `ls_tax_classification-tax_group`.
+**Solucao**: Corrigir classificacao fiscal do BP via transacao/Fiori app de BP.
+
+### 12.3 IE Vazia (Inscricao Estadual)
+
+**Sintoma**: Party sem registro `IE` no payload.
+**Causa**: Vendor/Customer sem STCD3, ou Plant sem STATE_INSC.
+**Debug**: Breakpoint em `CL_TXS_PARTY_BR::GET_VALUE_IE` (linha 1977).
+**Solucao**: Preencher campo STCD3 no vendor/customer master ou STATE_INSC na J_1BBRANCH.
+
+### 12.4 SUFRAMA Nao Aplicado
+
+**Sintoma**: Operacao em Zona Franca sem beneficio SUFRAMA.
+**Causa**: Codigo SUFRAMA nao preenchido nos dados mestre.
+**Debug**: Breakpoint em `CL_TXS_PARTY_BR::GET_VALUE_SUFRAMA` (linha 2018). Para SD, verificar tambem `CL_TXS_USAGE_PURPOSE_BR::IS_USAGE_PURPOSE_FREE_TX_ZONE`.
+**Solucao**: Preencher SUFRAMA diretamente nos dados mestre: `J_1BBRANCH-SUFRAMA` (plant) ou `KNA1-SUFRAMA` (customer). ~~BRF+ descontinuado no TXS~~.
+
+### 12.5 Simples Nacional Nao Reconhecido
+
+**Sintoma**: Fornecedor optante do Simples nao tem aliquotas diferenciadas.
+**Causa**: Campo TDT (Tax Declaration Type) nao preenchido como `SN`, ou classes do Simples nao configuradas.
+**Debug**: Breakpoint em `CL_TXS_PARTY_BR::GET_VALUE_TAX_DECLARATION_TYPE` (linha 2034) e `CL_TXS_SIMPLES_NACIONAL::GET_CLASSES_AND_RATES`.
+**Solucao**: Configurar TDT = `SN` no vendor master (LFA1-TDT) e manter tabela de classes/aliquotas do Simples.
+
+---
+
+## Apendice: Constantes Deprecated vs. Internal Codes
+
+As constantes `con_tax_values_type` em `CL_TXS_PARTY_BR` estao marcadas como **[DEPRECATED]** (linha 7). O sistema atual usa `CL_TXS_INTERNAL_CODES::api_tax_registration` para obter os valores de `tax_number_type_code` dinamicamente. Os valores das constantes deprecated sao:
+
+(Fonte: `cl_txs_party_br.abap:7-30`)
+
+```
+CNAE, CNPJ, COFINSContributor, CPOM, IE, IBGECode, ICMSContributor,
+ICMSSTContributor, IM, IPIContributor, ISSContributor, legalNature,
+PISContributor, taxRegimenCode, IPITaxSplit, SUFRAMA, companySize,
+taxDeclarationType, CBSContributor, IBSContributor
+```
+
+Na pratica, os metodos `GET_VALUE_*` ja usam `cl_txs_internal_codes=>get_instance( )->get_single_internal_code_value(...)` para obter o `tax_number_type_code` correto. Os valores deprecated servem apenas como referencia legivel.
+
+---
+
+*Documento gerado a partir do codigo-fonte em `incoming/`. Todos os valores tecnicos foram verificados contra os arquivos fonte.*

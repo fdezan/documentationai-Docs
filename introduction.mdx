@@ -1,94 +1,56 @@
 ---
-title: Introduction to Dezan
-description: Discover Dezan's documentation platform, designed for organizing and managing project documentation with ease. Learn about its key features, benefits, and how it streamlines your workflow.
+title: "LOCBR Knowledge Base"
+description: "Base tecnica de Localizacao Brasil para SAP S/4HANA Cloud — Tax Service, Nota Fiscal, ABAP Cloud"
 ---
 
-<Callout kind="info" title="Starter Kit Template">
-  This documentation was generated as a starter kit template based on your brand. Please review and customize the content to accurately reflect your product's features, APIs, and capabilities.
-</Callout>
+Base de conhecimento tecnico de **Localizacao Brasil (LOCBR)** no SAP S/4HANA Cloud.
+Elaborada por Fabio Dezan.
 
-## Overview
+---
 
-Dezan provides a powerful documentation platform that helps you organize, manage, and share project documentation effortlessly. You can create structured spaces for your teams, collaborate in real-time, and keep everything searchable and up-to-date. Whether managing software projects, internal wikis, or client deliverables, Dezan simplifies your workflow and ensures knowledge stays accessible.
-
-## Key Features
-
-Dezan offers essential tools to enhance your documentation experience.
+## O que voce encontra aqui
 
 <Columns cols={3}>
-  <Card title="Organized Spaces" icon="folder" href="#use-cases">
-    Create dedicated spaces for projects with nested pages, tags, and permissions to keep content structured.
+  <Card title="Tax Service (TXS)" icon="calculator" href="/txs/overview">
+    Motor de calculo externo para impostos brasileiros — arquitetura de 8 fases, payload, response, troubleshooting e extensibilidade.
   </Card>
-  <Card title="Real-time Collaboration" icon="users" href="#use-cases">
-    Invite team members to edit simultaneously, with version history and comments for seamless teamwork.
+  <Card title="Treinamento TXS" icon="graduation-cap" href="/txs/treinamento/dia1-arquitetura">
+    Handouts de treinamento de 4 dias cobrindo arquitetura, dados mestres, configuracao e debug.
   </Card>
-  <Card title="Advanced Search" icon="search" href="#quick-start">
-    Quickly find documents using full-text search, filters, and AI-powered suggestions.
+  <Card title="S/4HANA Cloud" icon="cloud" href="/s4hana/rap-model">
+    RAP, ABAP Cloud, Clean Core, Key User Extensibility e fundamentos de Nota Fiscal.
   </Card>
 </Columns>
 
-## Use Cases
+---
 
-Dezan adapts to various scenarios.
-
-<Tabs>
-  <Tab title="Software Development" icon="code">
-    Maintain API references, changelogs, and deployment guides in one place. Track releases with versioned docs.
-  </Tab>
-  <Tab title="Internal Knowledge Base" icon="book-open">
-    Build company wikis, onboarding materials, and FAQs that teams can easily update and access.
-  </Tab>
-  <Tab title="Client Projects" icon="folder">
-    Share project status, deliverables, and reports securely with clients via public or private links.
-  </Tab>
-</Tabs>
-
-## Quick Start
-
-Get up and running with Dezan in minutes.
-
-<Steps>
-  <Step title="Create Account" icon="user">
-    Sign up at `https://dezan.com` with your email. Verify your account to access the dashboard.
-  </Step>
-  <Step title="Set Up Space" icon="folder">
-    Click "New Space" and name it for your project, like "My Project Docs". Add a description.
-  </Step>
-  <Step title="Add First Document" icon="plus">
-````markdown
-# Welcome to My Project
-
-This is your first document.
-````
-
-    Use the editor to create markdown pages with embeds and components.
-  </Step>
-  <Step title="Invite Collaborators" icon="users">
-    Share the space link or add emails directly. Set roles like editor or viewer.
-  </Step>
-</Steps>
-
-<Callout kind="tip">
-  Explore the <Card title="Quickstart Guide" icon="rocket" href="/quickstart" /> for detailed setup instructions.
-</Callout>
-
-## Next Steps
-
-Dive deeper into Dezan's capabilities.
+## Conteudo Principal
 
 <Columns cols={2}>
-  <Card title="Quickstart" icon="zap" href="/quickstart">
-    Complete your first project setup with step-by-step guidance.
+  <Card title="Payload Reference" icon="file-text" href="/txs/payload/header">
+    Referencia completa de cada estrutura do payload TXS com origem dos dados e breakpoints ADT.
   </Card>
-  <Card title="Authentication" icon="lock" href="/authentication">
-    Secure your spaces with API keys and user management.
+  <Card title="Pipeline por Fase" icon="arrow-right" href="/txs/pipeline/request">
+    Fluxo de execucao do TXS documentado fase a fase: request, comunicacao HTTP, response e pos-processamento.
   </Card>
-  <Card title="Advanced Features" icon="settings" href="/configuration">
-    Customize workflows and integrations.
+  <Card title="Troubleshooting" icon="alert-triangle" href="/txs/reference/troubleshooting">
+    10 cenarios de problema com classes, metodos, variaveis e solucoes tipicas.
   </Card>
-  <Card title="Changelog" icon="git-branch" href="/changelog">
-    Stay updated with the latest releases.
+  <Card title="Cheat Sheets" icon="clipboard" href="/txs/reference/cheatsheet-conditions">
+    Condition types, tabelas de configuracao e classes de debug em formato de consulta rapida.
   </Card>
 </Columns>
 
-Ready to customize? Review the starter template sections above and tailor them to your Dezan's specific workflows. Your documentation hub awaits!
+---
+
+## Sobre esta base
+
+Esta documentacao foi construida a partir de:
+- **Codigo-fonte ABAP** baixado via SAP ADT REST API e catalogado (234+ artefatos TXS)
+- **Treinamento presencial** de 4 dias sobre Tax Service
+- **Analise tecnica** de classes, interfaces e estruturas do pipeline TXS
+- **Verificacao contra codigo-fonte** — todos os valores tecnicos (condition types, constantes, nomes de tabelas) foram validados contra o codigo real
+
+<Callout kind="info">
+Todos os valores tecnicos desta base foram verificados contra o codigo-fonte ABAP. Quando um valor nao pode ser confirmado, ele e marcado com aviso explicito.
+</Callout>

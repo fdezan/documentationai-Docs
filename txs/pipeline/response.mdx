@@ -1,0 +1,702 @@
+---
+title: "TXS Pipeline — Fases 5-6: Response e Mapeamento para KOMV"
+description: "Documento de referencia por fase do pipeline -- cobre o processamento da resposta do Tax Engine e o mapeamento para pricing conditions SAP."
+---
+
+<Callout kind="info">
+Documento de referencia por fase do pipeline -- cobre o processamento da resposta do Tax Engine e o mapeamento para pricing conditions SAP.
+Todos os valores tecnicos foram verificados contra o codigo-fonte em `incoming/`.
+
+**Ultima atualizacao**: 2026-03-03
+</Callout>
+
+
+---
+
+## Visao Geral
+
+Apos a chamada HTTP ao Tax Engine (fase 4), duas fases executam sequencialmente:
+
+- **Fase 5 -- Processamento da Response**: Parse do JSON retornado, desserializacao para estruturas ABAP, dispatch por tax type e armazenamento no buffer singleton.
+- **Fase 6 -- Mapeamento para KOMV**: Executada N vezes (uma por condition type no pricing procedure). Le os valores do buffer e mapeia para os campos da KOMV (KWERT, KBETR, KAWRT).
+
+A fase 5 ocorre **uma unica vez** (na condition TXSC). A fase 6 ocorre para **cada condition type** subsequente (BX16, ICM1, BIP0, etc.).
+
+---
+
+## Fase 5 -- Processamento da Response
+
+### 5.1 Desserializacao
+
+**Classe**: `CL_TXS_COMMUNICATION`
+**Metodo**: `FETCH_RESPONSE`
+**Fonte**: `cl_txs_communication.abap:211`
+
+```abap
+method FETCH_RESPONSE.
+  data(lv_http_status) = client->get_status( ).
+  data(lr_response_entity) = client->get_response_entity( ).
+
+  if lv_http_status = con_http_status_ok.
+    " 1. camelCase -> snake_case
+    data(json_string) = json_tool->rename_properties_to_field(
+      lr_response_entity->get_string_data( ) ).
+
+    " 2. Desserializa e cria instancia
+    response = cl_txs_response=>get_instance(
+      i_country         = country
+      i_response_json   = json_string
+      i_payload         = payload->get_payload( )
+      i_pricing_context = pricing_context ).
+  else.
+    " Erro HTTP -> exception CX_TXS_EXCEPTION
+    raise exception type cx_txs_exception ...
+  endif.
+endmethod.
+```
+
+**Etapas**:
+
+1. Verifica HTTP status -- deve ser `200` (constante `con_http_status_ok`). Fonte: `cl_txs_communication.abap:49`
+2. Converte nomes JSON de camelCase para snake_case via `CL_TXS_JSON_SERIALIZER::RENAME_PROPERTIES_TO_FIELD`. Fonte: `cl_txs_json_serializer.abap:954`
+3. Desserializa JSON para estrutura `TXS_RESPONSE` via `CL_TXS_RESPONSE::DESERIALIZE_RESPONSE` usando `pretty_name = json_tool->pretty_mode-camel_case`. Fonte: `cl_txs_response.abap:124-137`
+4. Se HTTP status != 200: lanca excecao `cx_txs_exception` com textid `http_server_error`
+
+---
+
+### 5.2 Estrutura da Response
+
+A response e uma hierarquia de 3 niveis:
+
+```
+TXS_RESPONSE (raiz)
+  +-- tax_lines[] (TXS_TAX_LINE -- um por item da transacao)
+  |     +-- tax_values[] (TXS_TAX_VALUE -- um por tipo de imposto no item)
+  |           +-- tax_attributes[] (TXS_TAX_ATTRIBUTE -- atributos fiscais: CST, CENQ, etc.)
+  +-- warning[] (TXS_TAX_WARNING -- alertas do motor)
+```
+
+#### TXS_RESPONSE (Raiz)
+
+| Campo | Descricao | Mapeamento |
+|-------|-----------|------------|
+| `id` | Transaction ID (correlaciona com payload) | Buffer: `trace_guid` |
+| `total` | Valor total a pagar (com impostos) | TAAS_TOTAL: `KWERT = total`, `KBETR = 1000` |
+| `sub_total` | Valor base antes dos impostos | TAAS_SUBTOTAL: `KWERT = sub_total`, `KBETR = total_tax` |
+| `total_tax` | Soma total de impostos | Usado no TAAS_SUBTOTAL como KBETR |
+| `total_withholding_tax` | Total de impostos retidos (WHT) | Soma de IR, CSLL, PIS-WHT, COFINS-WHT, INSS-WHT |
+| `country` | Pais (`BR`) | -- |
+| `date` | Timestamp da resposta | Buffer: truncado para 10 chars (data) no hash |
+| `tax_lines` | Linhas de imposto por item | Ver TXS_TAX_LINE |
+| `warning` | Alertas do motor | Ver TXS_TAX_WARNING |
+
+**Fonte**: `incoming/txs_response.abap`
+
+#### TXS_TAX_LINE (Por Item)
+
+| Campo | Descricao | Observacao |
+|-------|-----------|------------|
+| `id` | ID do item (correlaciona com TXS_ITEM) | Chave de lookup no BUILD |
+| `total_tax` | Soma de impostos do item | Consolidado |
+| `taxcode` | Tax code externo (do engine) | Mapeado para SAP via `TXSMAPEXTTOERP` |
+| `total_rate` | Aliquota total combinada | Soma das individuais |
+| `tax_values` | Valores por tipo de imposto | Estrutura TXS_TAX_VALUE |
+
+**Fonte**: `incoming/txs_tax_line.abap`
+
+#### TXS_TAX_VALUE -- A Estrutura Central
+
+| Campo | Descricao | Mapeamento para KOMV |
+|-------|-----------|---------------------|
+| `tax_type_code` | Tipo de imposto (ICMS, IPI, PIS...) | Chave de dispatch (BUILD_MM_*, BUILD_SD_*) |
+| `rate` | Aliquota (%) | `KBETR = rate * 10` |
+| `taxable` | Base de calculo | `KAWRT = taxable` |
+| `value` | Valor calculado do imposto | `KWERT = value` |
+| `exempted_base_percent` | Percentual de base isenta | `KBETR = (100 - exempt%) * 10` (ou direto para ICMS-ST) |
+| `exempted_base_amount` | Valor da base isenta | `KWERT = exempted_base_amount` |
+| `other_base_amount` | Outra base (pauta fiscal) | `KWERT = other_base_amount` |
+| `deductible_tax_amount` | Valor dedutivel (credito fiscal) | `HAS_CREDIT` retorna true se > 0 |
+| `jurisdiction_code` | UF da jurisdicao (SP, RJ...) | Via `CL_TXS_JURISDICTION_MAPPER` |
+| `due_category` | `P` = payable (a pagar) | Constante: `DUE_CATEGORY_PAYABLE = 'P'`. Fonte: `if_txs_constants.abap:151` |
+| `is_tax_deferred` | Imposto diferido (true/false) | Logica ICMS-DP |
+| `withholding_relevant` | Relevante para retencao | true para PIS-WHT, COFINS-WHT, etc. |
+
+**Fonte**: `incoming/txs_tax_value.abap`
+
+---
+
+### 5.3 Tax Type Codes BR
+
+**Fonte**: `if_txs_constants_br.abap:200-224` (constante `tax_type_code`)
+
+#### Impostos Estaduais (ICMS)
+
+| tax_type_code | Constante ABAP | Imposto | Fonte |
+|---------------|----------------|---------|-------|
+| **ICMS** | `icms` | ICMS | `if_txs_constants_br.abap:201` |
+| **ICMS-ST** | `icms_st` | ICMS Substituicao Tributaria | `if_txs_constants_br.abap:202` |
+| **ICMS-FCP** | `icms_fcp` | Fundo de Combate a Pobreza | `if_txs_constants_br.abap:203` |
+| **ICMS-ST-FCP** | `icms_st_fcp` | FCP sobre ICMS-ST | `if_txs_constants_br.abap:204` |
+| **ICMS-DP** | `icms_dp` | Diferimento Parcial | `if_txs_constants_br.abap:205` |
+| **ICMS-OP** | `icms_op` | ICMS Offset/Complementar | `if_txs_constants_br.abap:206` |
+| **ICMS-D-FCP** | `icms_d_fcp` | FCP sobre ICMS Diferido | `if_txs_constants_br.abap:207` |
+| **ICMS-DIFAL** | `icms_difal` | Diferencial de Aliquota | `if_txs_constants_br.abap:208` |
+| **ICMS-DIFAL-FCP** | `icms_difal_fcp` | FCP sobre ICMS-DIFAL | `if_txs_constants_br.abap:209` |
+
+#### Impostos Federais
+
+| tax_type_code | Constante ABAP | Imposto | Fonte |
+|---------------|----------------|---------|-------|
+| **IPI** | `ipi` | Imposto sobre Produtos Industrializados | `if_txs_constants_br.abap:210` |
+| **PIS** | `pis` | Programa de Integracao Social | `if_txs_constants_br.abap:211` |
+| **PIS-WHT** | `pis_wht` | PIS retido na fonte | `if_txs_constants_br.abap:212` |
+| **COFINS** | `cofins` | Contribuicao para Financiamento da Seguridade Social | `if_txs_constants_br.abap:213` |
+| **COFINS-WHT** | `cofins_wht` | COFINS retido na fonte | `if_txs_constants_br.abap:214` |
+| **CSLL-WHT** | `csll_wht` | CSLL retencao na fonte | `if_txs_constants_br.abap:219` |
+| **IR-WHT** | `ir_wht` | IRRF | `if_txs_constants_br.abap:220` |
+| **IR-WHT-INVOICE** | `ir_wht_inv` | IRRF na invoice | `if_txs_constants_br.abap:221` |
+
+#### Impostos Municipais (ISS)
+
+| tax_type_code | Constante ABAP | Imposto | Fonte |
+|---------------|----------------|---------|-------|
+| **ISS-PROV** | `iss_prov` | ISS Provedor | `if_txs_constants_br.abap:215` |
+| **ISS-PROV-WHT** | `iss_prov_wht` | ISS Provedor Retencao | `if_txs_constants_br.abap:216` |
+| **ISS-EXEC** | `iss_exec` | ISS Executor | `if_txs_constants_br.abap:217` |
+| **ISS-EXEC-WHT** | `iss_exec_wht` | ISS Executor Retencao | `if_txs_constants_br.abap:218` |
+
+#### Impostos Previdenciarios
+
+| tax_type_code | Constante ABAP | Imposto | Fonte |
+|---------------|----------------|---------|-------|
+| **INSS-WHT** | `inss_wht` | INSS retido na fonte | `if_txs_constants_br.abap:222` |
+| **INSS-CPRB** | `inss_cprb` | INSS Contribuicao Previdenciaria s/ Receita Bruta | `if_txs_constants_br.abap:223` |
+
+---
+
+### 5.4 Tax Attributes
+
+**Fonte**: `cl_txs_internal_codes.abap:154-181` (constante `api_tax_attributes_type`)
+
+| Internal Code | Valor no JSON | Significado | Classe Extratora |
+|---------------|---------------|-------------|------------------|
+| `cst` | `CST` | Codigo de Situacao Tributaria | `IF_TXS_TAX_ATTRIBUTES_BR::get_cst()` |
+| `cenq` | `CENQ` | Enquadramento IPI | `IF_TXS_TAX_ATTRIBUTES_BR::get_cenq()` |
+| `surcharge_rate` | `surchargeRate` | MVA (Margem de Valor Agregado) ICMS-ST | `IF_TXS_TAX_ATTRIBUTES_BR::get_surcharge_rate()` |
+| `collection_code` | `collectionCode` | Codigo de arrecadacao GNRE/DARF | `IF_TXS_TAX_ATTRIBUTES_BR::get_collection_code()` |
+| `pauta_quantity` | `pautaQuantity` | Quantidade para pauta fiscal | `IF_TXS_TAX_ATTRIBUTES_BR::get_pauta_quantity()` |
+| `pauta_unit` | `pautaUnit` | Unidade de medida da pauta | `IF_TXS_TAX_ATTRIBUTES_BR::get_pauta_unit()` |
+| `base_determination` | `baseDetermination` | Modalidade de determinacao de base | `IF_TXS_TAX_ATTRIBUTES_BR::get_base_determination()` |
+| `cst_mun` | `CST-MUN_TAXSIT` | CST Municipal (ISS) | `IF_TXS_TAX_ATTRIBUTES_BR::get_cst_mun()` |
+| `legal_provision` | `legalProvision` | Fundamentacao juridica | `IF_TXS_TAX_ATTRIBUTES_BR::get_legal_provision(i_index)` |
+| `legal_pcode` | `legalPCode` | Codigo da provisao legal | `IF_TXS_TAX_ATTRIBUTES_BR::get_legal_provision_code(i_index)` |
+| `deferral_percentage` | *(via internal codes)* | Percentual de diferimento ICMS | `IF_TXS_TAX_ATTRIBUTES_BR::get_deferral_percentage()` |
+| `deferral_amount` | *(via internal codes)* | Valor diferido ICMS | `IF_TXS_TAX_ATTRIBUTES_BR::get_deferral_amount()` |
+| `cbenef` | *(via internal codes)* | Codigo de beneficio fiscal (NF-e) | -- |
+| `reduction_percentage` | *(via internal codes)* | Percentual de reducao de base | `IF_TXS_TAX_ATTRIBUTES_BR::get_reduction_percentage()` |
+
+**Uso tipico por imposto**:
+
+| Imposto | Atributos Tipicos | Observacao |
+|---------|-------------------|------------|
+| ICMS | `CST`, `baseDetermination`, `legalProvision` | CST determina regime tributario |
+| ICMS-ST | `CST`, `surchargeRate`, `collectionCode` | surchargeRate = MVA |
+| ICMS-DP | `CST`, `deferral_percentage`, `deferral_amount` | Diferimento parcial |
+| IPI | `CST`, `CENQ` | CENQ = enquadramento (ex: 999) |
+| PIS / COFINS | `CST` | Ex: 50, 70, 73, 98, 99 |
+| ISS | `CST-MUN_TAXSIT` | CST Municipal |
+
+---
+
+### 5.5 Parse por Tax Type
+
+**Classe**: `CL_TXS_TAX_TYPES_VALUES_BR`
+**Metodo principal**: `BUILD` (despacha para `BUILD_MM_PER_TAX_VALUE` ou `BUILD_SD_PER_TAX_VALUE`)
+
+O dispatch e feito via `cl_txs_internal_codes=>get_instance( )->is_value_in_internal_code()`, comparando o `tax_type_code` retornado com os internal codes configurados (sem hardcoding de strings).
+
+#### Dispatch MM (Compras)
+
+**Fonte**: `cl_txs_tax_types_values_br.abap:844`
+
+| tax_type_code | Metodo |
+|---------------|--------|
+| IPI | `BUILD_MM_IPI` |
+| PIS | `BUILD_MM_PIS` |
+| PIS-WHT | `BUILD_MM_PIS_WHT` |
+| COFINS | `BUILD_MM_COFINS` |
+| COFINS-WHT | `BUILD_MM_COFINS_WHT` |
+| ICMS, ICMS-ST, ICMS-FCP, ICMS-ST-FCP, ICMS-DIFAL, ICMS-DIFAL-FCP, ICMS-FTZ | `BUILD_MM_ICMS` |
+| CSLL-WHT | `BUILD_MM_CSLL` |
+| IR-WHT | `BUILD_MM_IR` |
+| IR-WHT-INVOICE | `BUILD_MM_IR_WHT_INVOICE` |
+| INSS-WHT | `BUILD_MM_INSS_WHT` |
+| II | `BUILD_MM_II` |
+| ISS-PROV, ISS-EXEC, ISS-PROV-WHT, ISS-EXEC-WHT | `BUILD_ISS` |
+
+#### Dispatch SD (Vendas)
+
+**Fonte**: `cl_txs_tax_types_values_br.abap:1346`
+
+| tax_type_code | Metodo |
+|---------------|--------|
+| ICMS, ICMS-ST, ICMS-FCP, ICMS-ST-FCP, ICMS-DP, ICMS-OP, ICMS-FTZ | `BUILD_SD_ICMS` |
+| IPI | `BUILD_SD_IPI` |
+| PIS | `BUILD_SD_PIS` |
+| PIS-WHT | `BUILD_SD_PIS_WHT` |
+| COFINS | `BUILD_SD_COFINS` |
+| COFINS-WHT | `BUILD_SD_COFINS_WHT` |
+| CSLL-WHT | `BUILD_SD_CSLL` |
+| IR-WHT | `BUILD_SD_IR` |
+| IR-WHT-INVOICE | `BUILD_SD_IR_WHT_INVOICE` |
+| INSS-WHT | `BUILD_SD_INSS_WHT` |
+| INSS-CPRB | `BUILD_SD_INSS_CPRB` |
+| ISS-PROV, ISS-EXEC, ISS-PROV-WHT, ISS-EXEC-WHT | `BUILD_ISS` |
+
+Cada metodo `BUILD_MM_*` / `BUILD_SD_*` recebe:
+- `I_ID` (string): ID do item
+- `I_TAX` (TXS_TAX_VALUE): Valores do imposto
+- `I_ATTRIBUTES` (ref to IF_TXS_TAX_ATTRIBUTES): Acesso aos tax_attributes
+
+---
+
+### 5.6 Response Buffer
+
+**Classe**: `CL_TXS_RESPONSE_BUFFER` (singleton)
+**Interface**: `IF_TXS_RESPONSE_BUFFER`
+**Fonte**: `incoming/cl_txs_response_buffer.abap`, `incoming/if_txs_response_buffer.abap`
+
+O buffer armazena responses para reutilizacao. A chamada HTTP ao tax engine ocorre apenas **uma vez** (na condition type TXSC). Todas as demais condition types leem do buffer.
+
+#### Estrutura do Buffer
+
+**Fonte**: `if_txs_response_buffer.abap:6-23`
+
+| Campo | Tipo | Descricao |
+|-------|------|-----------|
+| `request_hash` | `string` | Hash SHA1 do payload (chave primaria) |
+| `document_item_key` | `char16` | Chave do item do documento (chave primaria) |
+| `timestamp_service_call` | `timestampl` | Timestamp da chamada HTTP |
+| `response` | `string` | JSON da response completa |
+| `request` | `string` | JSON do request serializado |
+| `ext_tax_code` | `txs_ext_tax_code` | Tax code externo (do engine) |
+| `s4_tax_code` | `mwskz` | Tax code SAP (mapeado) |
+| `trace_guid` | `txs_guid` | GUID de rastreamento |
+| `document_item_id` | `txs_doc_item` | ID do item no documento |
+| `kappl` | `kappl` | Aplicacao (TX = MM, V = SD) |
+
+#### Calculo do Hash
+
+**Fonte**: `cl_txs_response_buffer.abap:70-97`
+
+O hash SHA1 e calculado sobre o payload serializado, **removendo** o campo `id` e truncando `date` para 10 caracteres (somente data, sem hora). Isso garante que payloads identicos produzam o mesmo hash:
+
+```abap
+" Prepara payload para hash (remove volatilidade)
+clear ls_request-id.
+ls_request-date = ls_request-date(10).  " Apenas data
+
+" Serializa e calcula SHA1
+data(lv_payload_serialized) = serialize_request( ls_request ).
+r_hash = calculate_hash( lv_payload_serialized ).
+```
+
+#### Lookup: Invoice vs. Outros
+
+**Fonte**: `cl_txs_response_buffer.abap:285-291`
+
+Para invoice, a chave de busca inclui `document_item_id` (TAXPS). Para outros documentos, usa `document_item_key`:
+
+```abap
+IF cl_txs_business_transaction=>get_instance( )->is_invoice( ).
+  READ TABLE response_buffer WITH KEY
+    request_hash = lv_request_hash
+    document_item_id = i_pricing_context->get_item( )-taxps.
+ELSE.
+  READ TABLE response_buffer WITH KEY
+    request_hash = lv_request_hash
+    document_item_key = lv_doc_ref.
+ENDIF.
+```
+
+#### Feature Toggle
+
+**Fonte**: `cl_txs_controller.abap:203`
+
+O feature toggle `GLO_LOG_BR_EXT_JSON_RESP` (tipo `ftg_id`) controla o metodo de armazenamento da response no buffer:
+
+```abap
+CONSTANTS ftg_br2_toggle_resconsp TYPE ftg_id VALUE 'GLO_LOG_BR_EXT_JSON_RESP'.
+IF cl_ftg_runtime_state=>is_on( ftg_br2_toggle_resconsp ).
+  add_response( ).
+ELSE.
+  lr_response_buffer->if_txs_response_buffer~add_response( ... ).
+ENDIF.
+```
+
+#### BAdI do Buffer
+
+O buffer suporta o BAdI `TXS_BADI_RESPONSE_BUFFER` com dois pontos de extensao:
+- `prepare_request_to_be_hashed`: Permite alterar o request antes do calculo do hash. Fonte: `cl_txs_response_buffer.abap:121`
+- `get_response`: Permite interceptar a leitura do buffer. Fonte: `cl_txs_response_buffer.abap:374`
+
+---
+
+## Fase 6 -- Mapeamento para KOMV (N vezes)
+
+### 6.1 Trigger: Cada Condition Type
+
+O pricing standard avalia cada condition type do pricing procedure. Conditions com **formula 279** (constante `con_formula_279 = 0000279`, Fonte: `cl_txs_condition_processing.abap:71`) acionam `CL_TXS_CONTROLLER::IF_TXS_CONTROLLER~EXECUTE`, que chama `PROCESS_CONDITION_RECORD`:
+
+```abap
+method process_condition_record.
+  if is_service_call_cond_type( c_pricing_condition_record-kschl ).
+    call_txs_from_pricing_formula( ).
+  else.
+    map_txs_to_pricing_formula( ... ).
+  endif.
+endmethod.
+```
+
+**Fonte**: `cl_txs_controller.abap:647-669`
+
+- **TXSC**: Dispara a chamada HTTP (ja executada na fase 4). Constante: `SERVICE_CALL type KSCHA value 'TXSC'`. Fonte: `if_txs_constants.abap:146`
+- **Todas as demais conditions** (BX16, ICM1, BIP0, etc.): Chamam `MAP_TXS_TO_PRICING_FORMULA`, que le do buffer e mapeia para KOMV.
+
+---
+
+### 6.2 Factory do Mapper
+
+**Classe**: `CL_TXS_COND_MAPPER_FACTORY`
+**Metodo**: `INITIALIZE`
+**Fonte**: `cl_txs_cond_mapper_factory.abap:99-138`
+
+A factory determina qual classe mapper sera usada, com 3 niveis de fallback:
+
+| Nivel | Criterio | Classe | Fonte |
+|-------|----------|--------|-------|
+| 1 | Classe customizada na tabela `TXS_COND_MAP` | Classe dinamica (`CREATE OBJECT TYPE (class_name)`) | `cl_txs_cond_mapper_factory.abap:112-125` |
+| 2 | Payload versao V2 | `CL_TXS_STANDARD_TAX_MAP_V2` | `cl_txs_cond_mapper_factory.abap:128-131` |
+| 3 | Country-specific (fallback) | `CL_TXS_CONDITIONS_MAPPER_BR` (Brasil) | `cl_txs_cond_mapper_factory.abap:44-59` |
+| -- | Se classe country-specific nao existir | `CL_TXS_STANDARD_TAX_MAP` | -- |
+
+**Hierarquia de classes**:
+
+```
+CL_TXS_CONDITIONS_MAPPER (base abstrata)
+  |
+  +-- CL_TXS_CONDITIONS_MAPPER_BR (Brasil - mapeamento J_1BNFTXCOND)
+  |
+  +-- CL_TXS_STANDARD_TAX_MAP (fallback generico - mapeamento TXS_COND_MAP)
+       |
+       +-- CL_TXS_STANDARD_TAX_MAP_V2 (V2 - herda do standard + valida pais)
+```
+
+O `MAP_TXS_TO_PRICING_FORMULA` no controller executa:
+
+1. Obtem instancia da factory: `CL_TXS_COND_MAPPER_FACTORY::GET_INSTANCE()`
+2. Inicializa: `INITIALIZE(country, response, pricing_context, cond_type)`
+3. Obtem mapper: `GET_MAPPER_INSTANCE()`
+4. Executa build (carrega response)
+5. Chama `MAP_TAX_TYPE_TO_CONDITION` -- preenche KOMV
+
+**Fonte**: `cl_txs_controller.abap:620-644`
+
+---
+
+### 6.3 Tabela J_1BNFTXCOND -- Configuracao de Mapeamento
+
+A tabela `J_1BNFTXCOND` define, para cada condition type, qual tipo de mapeamento sera aplicado. O metodo central e `MAP_TAX_TYPE_TO_CONDITION`:
+
+```abap
+method map_tax_type_to_condition.
+  data(ls_condition_map) = select_nfe_cond_map_by_key( ).
+  case condition_type.
+    when ls_condition_map-rate.       map_cond_rate( ls_condition_map ).
+    when ls_condition_map-value.      map_cond_amount( ls_condition_map ).
+    when ls_condition_map-base.       map_cond_base( ls_condition_map ).
+    when ls_condition_map-basered1.   map_cond_base_reduction_rate( ls_condition_map ).
+    when ls_condition_map-excbas.     map_cond_excluded_base( ls_condition_map ).
+    when ls_condition_map-othbas.     map_cond_other_base( ls_condition_map ).
+    when ls_condition_map-whtcollcode. map_cond_wht_collection_code( ls_condition_map ).
+    when ls_condition_map-srate.      map_cond_st_surcharge_rate( ls_condition_map ).
+    when ls_condition_map-qrate.      map_cond_pauta_rate( ls_condition_map ).
+    when ls_condition_map-qrate4dec.  map_cond_pauta_rate_4dec( ls_condition_map ).
+    when ls_condition_map-rate4dec.   map_cond_rate_4dec( ls_condition_map ).
+    when ls_condition_map-qbase.      map_cond_pauta_base( ls_condition_map ).
+    when get_condition_type( if_txs_constants_br=>internal_code-taas_subtotal ).
+                                      map_cond_taas_subtotal( ls_condition_map ).
+    when get_condition_type( if_txs_constants_br=>internal_code-taas_total ).
+                                      map_cond_taas_total( ls_condition_map ).
+    when others.
+      check_to_set_cond_to_exclusion( ).
+  endcase.
+endmethod.
+```
+
+**Fonte**: `cl_txs_conditions_mapper_br.abap:455-501`
+
+#### Tabela de Mapeamento Completa
+
+| Campo J_1BNFTXCOND | Tipo de Mapeamento | Metodo Mapper | Campos KOMV Resultantes |
+|---|---|---|---|
+| `rate` | Aliquota | `MAP_COND_RATE` | `KWERT = rate * 10`, `KBETR = rate * 10` |
+| `value` | Valor do imposto | `MAP_COND_AMOUNT` | `KWERT = value`, `KBETR = rate * 10`, `KAWRT = taxable` |
+| `base` | Base de calculo | `MAP_COND_BASE` | `KWERT = taxable` |
+| `basered1` | Reducao de base | `MAP_COND_BASE_REDUCTION_RATE` | Logica especial: ICMS-ST vs outros (ver secao 6.5) |
+| `excbas` | Base isenta | `MAP_COND_EXCLUDED_BASE` | `KWERT = exempted_base_amount` |
+| `othbas` | Outra base (pauta) | `MAP_COND_OTHER_BASE` | `KWERT = other_base_amount` |
+| `whtcollcode` | Codigo arrecadacao WHT | `MAP_COND_WHT_COLLECTION_CODE` | `KNUMA_BO = collection_code` |
+| `srate` | Sobretaxa MVA (ICMS-ST) | `MAP_COND_ST_SURCHARGE_RATE` | `KWERT = surcharge / 10`, `KBETR = surcharge * 10` |
+| `qrate` | Pauta fiscal rate | `MAP_COND_PAUTA_RATE` | `KWERT = rate`, `KBETR = rate * 10`, `KMEIN = pauta_unit`, `KPEIN = 1` |
+| `qrate4dec` | Pauta 4 decimais | `MAP_COND_PAUTA_RATE_4DEC` | `KWERT = rate * 100`, `KBETR = KWERT`, `KMEIN`, `KPEIN = 1` |
+| `rate4dec` | Aliquota 4 decimais | `MAP_COND_RATE_4DEC` | `KWERT = pauta_qty * 100` |
+| `qbase` | Base pauta | `MAP_COND_PAUTA_BASE` | `KWERT = pauta_qty * 10`, `KMEIN = pauta_unit`, `KPEIN = 1` |
+| *(TAAS_SUBTOTAL)* | Subtotal | `MAP_COND_TAAS_SUBTOTAL` | `KWERT = sub_total`, `KBETR = total_tax` |
+| *(TAAS_TOTAL)* | Total | `MAP_COND_TAAS_TOTAL` | `KWERT = total`, `KBETR = 1000` (fixo) |
+| *(others)* | Nao mapeado | -- | `KINAK = 'X'` ou `KINAK = 'Z'` |
+
+**Observacao sobre pauta**: Nos metodos de pauta, se `get_pauta_quantity()` retornar vazio e a application for `TX` (MM), executa `SET_COND_TO_EXCLUSION_WHEN_MM()` -- condition excluida. Para SD, a condition permanece sem exclusao. Fonte: `cl_txs_conditions_mapper_br.abap:539-543`
+
+---
+
+### 6.4 Constantes de Fator
+
+Definidas como constantes privadas de `CL_TXS_CONDITIONS_MAPPER_BR`:
+
+| Constante | Valor | Uso | Fonte |
+|-----------|-------|-----|-------|
+| `CON_FACTOR` | **10** | rate * 10 -> KBETR (18% -> 180) | `cl_txs_conditions_mapper_br.abap:146` |
+| `CON_TOTAL_PERCENTAGE` | **100** | Calculo de reducao de base | `cl_txs_conditions_mapper_br.abap:148` |
+| `CON_TAAS_TOTAL_PERCENTAGE` | **1000** | KBETR fixo do TAAS_TOTAL | `cl_txs_conditions_mapper_br.abap:147` |
+| `CON_PAUTA_PRICING_UNIT` | **1** | KPEIN fixo para pauta | `cl_txs_conditions_mapper_br.abap:149` |
+| `CON_PAUTA_FACTOR_RATE_4_DEC` | **100** | Multiplica rate para 4 decimais | `cl_txs_conditions_mapper_br.abap:150` |
+
+**Exemplos de conversao**:
+
+| Valor da Response | Fator | Resultado KBETR | Explicacao |
+|---|---|---|---|
+| rate = 18.00 | * 10 | 180.00 | Aliquota ICMS padrao |
+| rate = 7.60 | * 10 | 76.00 | Aliquota PIS |
+| rate = 1.6500 | * 100 | 165.00 | Aliquota PIS 4 decimais |
+| total = 1500.00 | fixo 1000 | 1000 | TAAS_TOTAL sempre KBETR = 1000 |
+
+---
+
+### 6.5 Logica Especial: Reducao de Base (basered1)
+
+O metodo `MAP_COND_BASE_REDUCTION_RATE` tem uma distincao **critica** entre ICMS-ST e outros impostos:
+
+```abap
+method map_cond_base_reduction_rate.
+  DATA(ls_tax_type_values) = get_tax_values_by_condition( i_condition_map ).
+
+  IF is_sub_trib_tax_type( i_condition_map-taxtyp ).
+    " ICMS-ST: valor direto
+    pricing_condition_record-kwert = ls_tax_type_values-exempted_base_percent / con_factor.
+    pricing_condition_record-kbetr = ls_tax_type_values-exempted_base_percent * con_factor.
+  ELSE.
+    " Outros impostos: valor invertido (100 - exempt%)
+    pricing_condition_record-kwert = ( con_total_percentage - ls_tax_type_values-exempted_base_percent ) / con_factor.
+    pricing_condition_record-kbetr = ( con_total_percentage - ls_tax_type_values-exempted_base_percent ) * con_factor.
+  ENDIF.
+  pricing_condition_value = pricing_condition_record-kwert.
+endmethod.
+```
+
+**Fonte**: `cl_txs_conditions_mapper_br.abap:318-331`
+
+**Determinacao de ICMS-ST**: O metodo `IS_SUB_TRIB_TAX_TYPE` verifica se o tax_type pertence ao grupo ICMS-ST via tabela `J_1BTAXGRP`:
+- Tax group `ICST` (ICMS-ST). Fonte: `if_txs_constants_br.abap:16`
+- Tax group `ICFS` (ICMS-ST FCP). Fonte: `if_txs_constants_br.abap:17`
+
+**Fonte**: `cl_txs_conditions_mapper_br.abap:283-293`
+
+**Exemplos praticos**:
+
+| Cenario | exempt% | Calculo | KWERT | KBETR |
+|---------|---------|---------|-------|-------|
+| ICMS com reducao 33.33% | 33.33 | (100 - 33.33) / 10, * 10 | 6.667 | 666.7 |
+| ICMS-ST com reducao 33.33% | 33.33 | 33.33 / 10, * 10 | 3.333 | 333.3 |
+| ICMS com reducao 50% | 50.00 | (100 - 50) / 10, * 10 | 5.000 | 500.0 |
+| ICMS-ST com reducao 50% | 50.00 | 50 / 10, * 10 | 5.000 | 500.0 |
+
+<Callout kind="info">
+**Importante**: Para ICMS (e outros impostos nao-ST), o valor na KOMV representa a **parcela tributavel** (100% - reducao). Para ICMS-ST, o valor representa a **propria reducao** (direto). Essa inversao e fundamental para o calculo correto do pricing.
+</Callout>
+
+
+---
+
+### 6.6 Condition Types por Imposto
+
+Todas as condition types verificadas no codigo-fonte:
+
+#### Conditions Principais
+
+**Fonte**: `if_logbr_ft_txs_constants.abap:91-131`
+
+| Imposto | Condition Types (KSCHL) | Fonte (linhas) |
+|---------|------------------------|----------------|
+| Service Call | **TXSC** | `if_txs_constants.abap:146,149` |
+| ICMS | **BX16**, **ICM1**, **ICM2**, **BX10**, **BX11**, **BX12**, **BIC1** | `:93-99` |
+| IPI | **BIP0**, **IPI1**, **IPI2**, **BX20**, **BX21**, **BX22**, **BXPA**, **BIP1** | `:101-108` |
+| PIS | **BPI1**, **IPIS**, **IPSN**, **BX80**, **BX81**, **BX82**, **BPIP** | `:110-116` |
+| COFINS | **BCO1**, **ICOF**, **ICON**, **BX70**, **BX71**, **BX72**, **BCOP** | `:118-124` |
+| II | **BXIR**, **II01**, **BASB**, **BXIE**, **BXII** | `:126-130` |
+
+#### Conditions Adicionais
+
+**Fonte**: `if_txs_constants_br.abap:108-119`
+
+| Imposto | Condition Type | Significado | Fonte (linha) |
+|---------|---------------|-------------|---------------|
+| PIS pauta | **BPI8** | PIS pauta (valor) | `:108` |
+| COFINS pauta | **BCO8** | COFINS pauta (valor) | `:109` |
+| IRRF | **BW61** | Retencao (invoice) | `:110` |
+| IRRF | **BX9U** | Base | `:111` |
+| IRRF | **BX9V** | Aliquota | `:112` |
+| INSS | **BW71** | Retencao (invoice) | `:113` |
+| INSS | **BX9R** | Aliquota | `:114` |
+| INSS | **BX9S** | Base | `:115` |
+| ICMS ZF rate | **BXRF** | Zona Franca rate | `:116` |
+| ICMS ZF base | **BXBF** | Zona Franca base | `:117` |
+| PIS fornecedor | **CPIS** | PIS fornecedor | `:118` |
+| COFINS fornecedor | **CCOS** | COFINS fornecedor | `:119` |
+
+---
+
+### 6.7 Exclusao de Conditions (KINAK)
+
+O campo `KINAK` da KOMV indica que uma condition esta excluida/inativa:
+
+| KINAK | Constante | Significado | Quando Ocorre | Fonte |
+|-------|-----------|-------------|---------------|-------|
+| **X** | `via_formulas_or_incorrect` | Excluida por formula ou erro | `WHEN OTHERS` + `check_to_set_cond_to_exclusion`, ou erro de pricing | `if_txs_constants.abap:12` |
+| **Z** | `used_internally` / `TXSC_CONDITION_INACTIVE` | TXS inativo ou exclusao interna | TXS nao ativo para a combinacao application/procedure/country/company code | `if_txs_constants.abap:13,83` |
+
+**Fluxo de exclusao**:
+
+1. **TXS inativo**: Se `CL_TXS_SWITCH::IS_ACTIVE()` retorna `false`, TXSC recebe `KINAK = 'Z'`. Fonte: `cl_txs_controller.abap:469-477`
+2. **Condition nao mapeada (mapper BR)**: `CHECK_TO_SET_COND_TO_EXCLUSION()` verifica se a condition aparece na lista de tax types excluidos. Fonte: `cl_txs_conditions_mapper_br.abap:168-173`
+3. **Mapper base (fallback)**: O `MAP_TAX_TYPE_TO_CONDITION` na classe base simplesmente chama `SET_CONDITION_TO_EXCLUSION()`, setando `KINAK = 'Z'`. Fonte: `cl_txs_conditions_mapper.abap:142-146,149-151`
+4. **Pauta sem quantidade (MM)**: Se `get_pauta_quantity()` vazio e application = `TX` (MM): exclusao. Fonte: `cl_txs_conditions_mapper_br.abap:539-543`
+
+---
+
+### 6.8 Clear Previo
+
+Antes de executar qualquer mapeamento, o controller limpa os campos da KOMV para evitar residuos de processamentos anteriores:
+
+```abap
+method clear_pricing_condition_values.
+  clear c_pricing_condition_value.
+  clear c_pricing_condition_record-kwert.
+  clear c_pricing_condition_record-kbetr.
+  clear c_pricing_condition_record-kawrt.
+  clear c_pricing_condition_record-knuma_bo.
+endmethod.
+```
+
+**Fonte**: `cl_txs_controller_br.abap:82-90`
+
+| Campo Limpo | Tipo | Descricao |
+|-------------|------|-----------|
+| `c_pricing_condition_value` | `KWERT` | Valor da condition |
+| `c_pricing_condition_record-kwert` | `KWERT` | Valor no registro KOMV |
+| `c_pricing_condition_record-kbetr` | `KBETR` | Taxa/percentual |
+| `c_pricing_condition_record-kawrt` | `KAWRT` | Base alternativa |
+| `c_pricing_condition_record-knuma_bo` | `KNUMA` | Numero do acordo (WHT collection code) |
+
+---
+
+### 6.9 Excecoes de Condition (Pos-Mapeamento)
+
+Apos o mapeamento padrao, `MAP_TAX_TYPE_TO_CONDITION` chama `process_business_exception()` para tratar casos especiais:
+
+**Fonte**: `cl_txs_conditions_mapper_br.abap:492-499`
+
+#### ICMO -- Total ICMS da Operacao
+
+Para a condition type `ICMO`:
+
+```abap
+result-kwert = -1 * total_icms_from_operation.
+result-kbetr = -1 * total_percentage.
+```
+
+ICMO sempre recebe o valor total de ICMS com sinal **invertido** (negativo). Fonte: `txs_cndns_exceptions_handle_br.abap:92-104`
+
+#### BX13 -- Zona Franca
+
+Quando a solucao de Zona Franca (CBTA) esta ativa e existe tax_type_code de ICMS Zona Franca na response, o `KWERT` do BX13 e **zerado**. Fonte: `txs_cndns_exceptions_handle_br.abap:82-89`
+
+---
+
+## Pontos de Debug -- Fases 5-6
+
+### Tabela Consolidada
+
+| # | Classe::Metodo | O que Verificar | Problema Diagnosticado |
+|---|----------------|----------------|----------------------|
+| 15 | `CL_TXS_TAX_TYPES_VALUES_BR::BUILD_MM_*` / `BUILD_SD_*` | `i_tax` (TXS_TAX_VALUE): rate, taxable, value, tax_type_code, exempted_base_percent | Aliquota/valor incorreto do Tax Engine, base zerada |
+| 16 | `CL_TXS_RESPONSE_BUFFER::GET_RESPONSE` | `lv_request_hash` (SHA1), lookup por hash + item key/id | Response nao encontrada no buffer (hash mismatch) |
+| 16b | `CL_TXS_RESPONSE_BUFFER::ADD_RESPONSE` | `i_request`, `i_response`, `lv_request_hash`, `ext_tax_code`, `s4_tax_code` | Buffer nao preenchido apos HTTP call |
+| 17 | `CL_TXS_COND_MAPPER_FACTORY::INITIALIZE` | `mapper_instance` -- qual classe: custom, V2, BR, standard | Mapper incorreto, classe customizada interceptando |
+| 18 | `CL_TXS_CONDITIONS_MAPPER_BR::MAP_TAX_TYPE_TO_CONDITION` | `ls_condition_map` (J_1BNFTXCOND), `condition_type` (KSCHL), resultado KWERT/KBETR/KAWRT | KOMV nao preenchido, condition sem registro na J_1BNFTXCOND |
+| 19 | `CL_TXS_CONDITIONS_MAPPER_BR::GET_TAX_VALUES_BY_CONDITION` | `r_tax_type_values`: rate, value, taxable, exempted_base_percent, `i_condition_map-taxtyp` | Tax type nao encontrado na response |
+| 19b | `CL_TXS_CONDITIONS_MAPPER::SET_CONDITION_TO_EXCLUSION` | `KINAK = 'Z'` sendo setado indevidamente | Condition excluida quando nao deveria |
+
+### Sequencia Recomendada de Debug
+
+1. **Verificar parse da response** (Debug Point 15): Breakpoint em `BUILD_MM_PER_TAX_VALUE` ou `BUILD_SD_PER_TAX_VALUE` para ver os tax types retornados e valores
+2. **Verificar buffer** (Debug Point 16/16b): Breakpoint em `GET_RESPONSE` para verificar se a response esta no buffer; em `ADD_RESPONSE` para verificar a gravacao
+3. **Verificar mapper** (Debug Point 17): Breakpoint em `CL_TXS_COND_MAPPER_FACTORY::INITIALIZE` -- inspecionar `mapper_instance` para confirmar a classe ativa
+4. **Verificar mapeamento** (Debug Point 18): Breakpoint em `MAP_TAX_TYPE_TO_CONDITION` para ver o dispatch e os valores finais na KOMV
+5. **Verificar lookup** (Debug Point 19): Breakpoint em `GET_TAX_VALUES_BY_CONDITION` se os valores mapeados estiverem incorretos
+
+---
+
+## Checklist do Consultor -- Response e Mapping
+
+- [ ] Response HTTP 200 recebida (verificar `lv_http_status` em `FETCH_RESPONSE`)
+- [ ] JSON desserializado corretamente (verificar `TXS_RESPONSE` populada)
+- [ ] `tax_lines` contem itens esperados (um por item do documento)
+- [ ] `tax_type_code` correto para cada imposto na response
+- [ ] `CST` retornado nos `tax_attributes` de cada `tax_value`
+- [ ] Response armazenada no buffer com hash SHA1 valido
+- [ ] Mapper correto instanciado (`CL_TXS_CONDITIONS_MAPPER_BR` para Brasil V1)
+- [ ] KOMV preenchido: `KWERT > 0`, `KBETR > 0`, `KAWRT > 0` para conditions ativas
+- [ ] J_1BNFTXCOND configurada para todos os condition types usados no pricing procedure
+- [ ] Nenhuma condition com `KINAK = 'X'` inesperado
+- [ ] Reducao de base (basered1): verificar logica ICMS-ST (direto) vs outros (invertido)
+- [ ] Conditions de pauta: `pauta_quantity` preenchida (obrigatoria para MM)
+- [ ] Excecoes pos-mapeamento: ICMO com sinal negativo, BX13 zerado se Zona Franca ativa
+
+---
+
+## Fontes
+
+Todos os valores tecnicos neste documento foram verificados nos seguintes arquivos de codigo-fonte:
+
+| Arquivo | Conteudo |
+|---------|----------|
+| `incoming/cl_txs_communication.abap` | Comunicacao HTTP (FETCH_RESPONSE) |
+| `incoming/cl_txs_response.abap` | Response (GET_INSTANCE, DESERIALIZE_RESPONSE) |
+| `incoming/cl_txs_response_buffer.abap` | Buffer singleton (hash SHA1, ADD/GET_RESPONSE) |
+| `incoming/cl_txs_tax_types_values_br.abap` | Parse por tax type (BUILD_MM_*, BUILD_SD_*) |
+| `incoming/cl_txs_conditions_mapper_br.abap` | Mapeamento response -> KOMV |
+| `incoming/cl_txs_conditions_mapper.abap` | Classe base do mapper |
+| `incoming/cl_txs_cond_mapper_factory.abap` | Factory de mapper (3 niveis de fallback) |
+| `incoming/cl_txs_controller.abap` | Controller principal (PROCESS_CONDITION_RECORD) |
+| `incoming/cl_txs_controller_br.abap` | Controller BR (CLEAR_PRICING_CONDITION_VALUES) |
+| `incoming/cl_txs_condition_processing.abap` | Processamento de conditions (formula 279) |
+| `incoming/txs_cndns_exceptions_handle_br.abap` | Excecoes de condition (ICMO, BX13) |
+| `incoming/if_txs_constants.abap` | Constantes globais TXS |
+| `incoming/if_txs_constants_br.abap` | Constantes BR (tax_type_code, tax_group, condition types) |
+| `incoming/if_logbr_ft_txs_constants.abap` | Condition types por imposto |
+| `incoming/cl_txs_internal_codes.abap` | Internal codes (tax_attributes_type) |
+| `incoming/txs_response.abap` | Estrutura TXS_RESPONSE |
+| `incoming/txs_tax_value.abap` | Estrutura TXS_TAX_VALUE |
+| `incoming/txs_tax_attribute.abap` | Estrutura TXS_TAX_ATTRIBUTE |
+| `reference/txs-verified-constants.md` | Constantes verificadas (fonte de verdade) |

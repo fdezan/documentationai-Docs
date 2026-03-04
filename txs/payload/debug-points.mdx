@@ -1,0 +1,960 @@
+---
+title: "TXS Debug Points — Guia Consolidado para Consultores"
+description: "Todos os pontos de debug ADT para diagnosticar problemas no pipeline TXS, organizados por fase."
+---
+
+<Callout kind="info">
+Todos os pontos de debug ADT para diagnosticar problemas no pipeline TXS, organizados por fase.
+</Callout>
+
+
+**Data de criacao**: 2026-03-03
+**Fontes**: `reference/txs-troubleshooting.md`, `incoming/cl_txs_controller.abap`, `incoming/cl_txs_controller_br.abap`, `incoming/cl_txs_communication.abap`, `incoming/cl_txs_switch.abap`, `incoming/cl_txs_response_buffer.abap`, `incoming/cl_txs_condition_processing.abap`, `incoming/cl_txs_conditions_mapper_br.abap`, `incoming/cl_txs_conditions_mapper.abap`, `incoming/cl_txs_cond_mapper_factory.abap`, `incoming/if_txs_constants.abap`
+
+---
+
+## Como Usar Este Guia
+
+1. Abra o Eclipse ADT e navegue ate a classe indicada
+2. Coloque breakpoint no metodo indicado
+3. Execute o cenario SAP (Pedido de Compra, Billing, etc.)
+4. Inspecione as variaveis indicadas na coluna "O que verificar"
+
+**Pre-requisito**: O TXS usa a formula 279 na pricing procedure para acionar o calculo. Todas as condition types TXS (TXSC + conditions de imposto) devem ter esta formula atribuida.
+Fonte: `cl_txs_condition_processing.abap:71` — `constants con_formula_279 type kofrm value 0000279`
+
+**Condition de service call**: O TXS usa a condition type **TXSC** para disparar a chamada HTTP ao Tax Engine.
+Fonte: `if_txs_constants.abap:146` — `constants SERVICE_CALL type KSCHA value 'TXSC'`
+
+**Inativacao de condition**: Quando o TXS esta inativo, a condition TXSC recebe KINAK = 'Z'.
+Fonte: `if_txs_constants.abap:83` — `constants TXSC_CONDITION_INACTIVE type KINAK value 'Z'`
+
+---
+
+## Visao Geral das 8 Fases
+
+| Fase | Descricao | Classes Principais |
+|------|-----------|-------------------|
+| 1 | Entrada e Validacoes | CL_LOGBR_FILL_LFD_ON_PRINCING, CL_TXS_SWITCH, CL_TXS_PRICING_CONTEXT |
+| 2 | Decisao: Service Call vs Mapping | CL_TXS_CONTROLLER, CL_TXS_PAYLOAD_TYPE |
+| 3 | Build do Payload | CL_TXS_PAYLOAD_BR, CL_TXS_ITEMS_BR, CL_TXS_LOCATIONS_BR, CL_TXS_PARTY_BR, CL_TXS_ITEM_CLASSIFICATIONS_BR, CL_TXS_CNAE_BR |
+| 4 | Comunicacao HTTP | CL_TXS_COMMUNICATION, CL_TXS_CONNECTION |
+| 5 | Processamento da Response | CL_TXS_RESPONSE, CL_TXS_TAX_TYPES_VALUES_BR, CL_TXS_RESPONSE_BUFFER |
+| 6 | Mapeamento para KOMV | CL_TXS_CONDITIONS_MAPPER_BR, CL_TXS_COND_MAPPER_FACTORY |
+| 7 | Verificacao de Mapeamento | CL_TXS_CONDITION_PROCESSING |
+| 8 | Pos-processamento | CL_TXS_CONTROLLER, CL_TXS_CONTROLLER_BR, CL_TXS_LFD_RECORDER |
+
+---
+
+## Fase 1 — Entrada e Validacoes
+
+### Debug Point 1: Preenchimento LFD (Local Fiscal Data)
+
+- **Classe**: `CL_LOGBR_FILL_LFD_ON_PRINCING`
+- **Metodo**: `RUN`
+- **Onde no codigo**: Chamado no inicio de `IF_TXS_CONTROLLER~EXECUTE`
+  Fonte: `cl_txs_controller.abap:404-408`:
+  ```abap
+  DATA(fill_pricing_with_lfd) = NEW cl_logbr_fill_lfd_on_princing( ).
+  c_pricing_item = fill_pricing_with_lfd->run(
+    i_pricing_header = i_pricing_header
+    i_pricing_item   = c_pricing_item
+  ).
+  ```
+- **O que verificar**:
+  - `c_pricing_item` apos o retorno — campos fiscais preenchidos:
+    - `STEUC` (NCM — classificacao fiscal do material)
+    - `TXJCD` (Tax Jurisdiction Code — codigo IBGE do municipio)
+    - `J_1BMATORG` (Material Origin)
+    - `J_1BMATUSE` (Material Usage)
+- **Problema diagnosticado**: NCM vazio, CFOP errado, dados fiscais ausentes no item de pricing
+- **Acao se falhar**: Verificar cadastro de material (`MARA-STEUC`, `MARC-STEUC`) e dados de endereco da planta/empresa
+
+---
+
+### Debug Point 2: Verificacao de Ativacao TXS
+
+- **Classe**: `CL_TXS_SWITCH`
+- **Metodo**: `IS_ACTIVE`
+- **Onde no codigo**: Chamado em `IF_TXS_CONTROLLER~EXECUTE` para decidir se o TXS processa
+  Fonte: `cl_txs_controller.abap:469-477`:
+  ```abap
+  IF cl_txs_switch=>get_instance( )->is_active(
+       i_application = i_pricing_header-kappl
+       i_pricing_procedure = i_pricing_header-kalsm
+       i_country = i_countries-land1
+       i_company_code = i_pricing_header-bukrs ) = abap_false.
+    IF lr_controller->is_service_call_cond_type( c_pricing_condition_record-kschl ).
+      c_pricing_condition_record-kinak = if_txs_constants=>txsc_condition_inactive.
+    ENDIF.
+    RETURN.
+  ENDIF.
+  ```
+- **O que verificar**:
+  - `r_active` — resultado final (true/false)
+  - `active` — conexao ativa (verificada no `CONSTRUCTOR` via `cl_txs_conn_config_factory`)
+    Fonte: `cl_txs_switch.abap:76-80`:
+    ```abap
+    data(lr_connection_config) = cl_txs_conn_config_factory=>get_instance( )->get_connection_config( ).
+    if lr_connection_config is bound.
+      active = lr_connection_config->is_connection_active( ).
+    endif.
+    ```
+  - `is_integration_active()` — verifica tabela `TXS_ACTIVATION` (application + pricing procedure)
+    Fonte: `cl_txs_switch.abap:113-115`:
+    ```abap
+    r_active = cl_txs_activation_dao=>get_instance( )->get_tax_service_active_status(
+      i_application  = i_application
+      i_pricing_name = i_pricing_procedure ).
+    ```
+  - `check_activation_exceptions()` — verifica tabela `TXS_ACTIVATION_EXCEPTION` (empresa/planta)
+    Fonte: `cl_txs_switch.abap:54-70`:
+    ```abap
+    data(ls_activation_exception) = lr_activation_dao->get_tax_service_except_entry( ... ).
+    r_active = xsdbool( ls_activation_exception is initial or
+       ls_activation_exception-calculation_engine = if_txs_constants=>calculation_engine-partner_engine ).
+    ```
+  - Activation Control V2: `cl_txs_activation_control=>get_instance( )->if_txs_activation_control~is_integration_active()`
+    Fonte: `cl_txs_switch.abap:124-128`
+- **Problema diagnosticado**: TXS nao e chamado, condition TXSC fica com KINAK='Z'
+- **Acao se falhar**:
+  - Verificar tabela `TXS_ACTIVATION` (chave: application `V`/`TX` + pricing procedure)
+  - Verificar tabela `TXS_ACTIVATION_EXCEPTION` (empresa/planta especifica)
+  - Verificar se `calculation_engine` = `'P'` (Partner Engine)
+    Fonte: `if_txs_constants.abap:200` — `partner_engine type txs_calculation_engine value 'P'`
+
+---
+
+### Debug Point 3: Pricing Context
+
+- **Classe**: `CL_TXS_PRICING_CONTEXT`
+- **Metodo**: `CONSTRUCTOR`
+- **Onde no codigo**: Criado em `IF_TXS_CONTROLLER~EXECUTE` via `CREATE_PRICING_CONTEXT`
+  Fonte: `cl_txs_controller.abap:455-463`:
+  ```abap
+  lr_controller->set_pricing_context( create_pricing_context(
+    i_pricing_header            = i_pricing_header
+    i_pricing_item              = c_pricing_item
+    i_pricing_condition_records = i_pricing_condition_records
+    i_plants_or_branches        = i_plants_or_branches
+    i_countries                 = i_countries
+    i_transaction_code          = i_transaction_code
+    i_local_time                = i_local_time
+    i_processing_moment         = i_pricing_processing_moment
+    i_group_condition           = i_group_condition ) ).
+  ```
+- **O que verificar**:
+  - `i_pricing_header` (KOMK) — cabecalho do pricing: `KAPPL` (application), `KALSM` (pricing procedure), `BUKRS` (empresa), `BELNR` (documento), `TRTYP` (tipo transacao)
+  - `i_pricing_item` (KOMP) — item do pricing: `KPOSN` (posicao), `MATNR` (material), `MWSKZ` (tax code), `STEUC` (NCM), `EVRTN`/`EVRTP` (referencia PO)
+  - `i_pricing_condition_records` (TXS_KOMV_INDEX_TTY) — todas as conditions do pricing
+  - `i_plants_or_branches` (T001W) — planta/filial
+  - `i_countries` (T005) — pais (INTCA, LAND1)
+  - `i_transaction_code` — tcode corrente (ME21N, VA01, MIRO, etc.)
+- **Problema diagnosticado**: Dados de entrada incorretos para todo o pipeline (material vazio, planta errada, application incorreta)
+
+---
+
+## Fase 2 — Decisao: Service Call vs Mapping
+
+### Debug Point 4: Decisao Service Call vs Buffer Read
+
+- **Classe**: `CL_TXS_CONTROLLER`
+- **Metodo**: `PROCESS_CONDITION_RECORD`
+- **Onde no codigo**:
+  Fonte: `cl_txs_controller.abap:647-669`:
+  ```abap
+  method process_condition_record.
+    data(lr_payload_type) = cl_txs_payload_type=>get_instance( pricing_context->get_country( ) ).
+    data(lv_payload_type) = lr_payload_type->determine_payload_type( pricing_context ).
+    ...
+    if is_service_call_cond_type( c_pricing_condition_record-kschl ).
+      call_txs_from_pricing_formula( ).
+    else.
+      map_txs_to_pricing_formula( ... ).
+    endif.
+    cl_txs_condition_processing=>get_instance( country )->check_mapping( ... ).
+  endmethod.
+  ```
+- **O que verificar**:
+  - `c_pricing_condition_record-kschl` — a condition type atual
+  - `is_service_call_cond_type()` — retorna `true` se for TXSC (service call), `false` para outras conditions (que fazem buffer read)
+    Fonte: `cl_txs_controller.abap:612-617` — verifica via `cl_txs_internal_codes` se o valor esta configurado como `condition_type-tax_service_integration`
+  - Se TXSC: chama `call_txs_from_pricing_formula()` (HTTP call)
+  - Se outra condition: chama `map_txs_to_pricing_formula()` (leitura do buffer)
+  - Verificacao de material vazio: se `MATNR` esta vazio e nao e Canada e payload type e V1, o metodo faz `RETURN` sem processar
+    Fonte: `cl_txs_controller.abap:652-656`
+- **Problema diagnosticado**: Condition errada triggerando ou nao a chamada HTTP, item sem material nao sendo processado
+
+---
+
+### Debug Point 5: Tipo de Payload
+
+- **Classe**: `CL_TXS_PAYLOAD_TYPE`
+- **Metodo**: `DETERMINE_PAYLOAD_TYPE`
+- **Onde no codigo**: Chamado em `PROCESS_CONDITION_RECORD` para determinar o tipo de payload
+  Fonte: `cl_txs_controller.abap:649-650`:
+  ```abap
+  data(lr_payload_type) = cl_txs_payload_type=>get_instance( pricing_context->get_country( ) ).
+  data(lv_payload_type) = lr_payload_type->determine_payload_type( pricing_context ).
+  ```
+- **O que verificar**:
+  - Resultado retornado — determina a classe de payload usada:
+    - **SD + integracao V2 ativa**: `CL_TXS_REQUEST_V2` (V2 com parties no item, extended fields)
+    - **MM + auto tax code**: `CL_TXS_PAYLOAD` (V1 standard)
+    - **MM default**: `CL_TXS_DIRECT_CALC_PAYLOAD` (calculo direto)
+  - `pricing_context->get_payload_type()` apos determinacao — valor `'V2'` ou outro
+    Fonte: `if_txs_constants.abap:204` — `PAYLOAD_VERSION_V2 type string value 'V2'`
+- **Problema diagnosticado**: Payload V1 quando deveria ser V2 (ou vice-versa), faltam campos V2 no request
+
+---
+
+## Fase 3 — Build do Payload
+
+### Debug Point 6: Header do Payload
+
+- **Classe**: `CL_TXS_PAYLOAD_BR`
+- **Metodo**: `BUILD_HEADER`
+- **Onde no codigo**: Chamado durante `payload->build()` em `CL_TXS_CONTROLLER.BUILD_PAYLOAD`
+  Fonte: `cl_txs_controller.abap:169-173`:
+  ```abap
+  method build_payload.
+    payload = cl_txs_payload_factory=>get_instance( )->get_payload( pricing_context ).
+    payload->set_pricing_context( pricing_context ).
+    payload->build( ).
+  endmethod.
+  ```
+- **O que verificar**:
+  - `payload-id` — UUID unico da requisicao (usado como X-CorrelationID no HTTP)
+  - `payload-sale_or_purchase` — `'S'` (SD) ou `'P'` (MM)
+  - `payload-operation_nature_code` — tipo de operacao: `'P'` (Purchase), `'S'` (Sale), `'PI'` (Purchase Invoice), `'SI'` (Sales Invoice), `'STO'` (Stock Transfer), `'CI'`/`'CS'` (Convergent Invoice)
+  - `payload-gross_or_net` — determina se preco base e bruto ou liquido
+  - `payload-date` — data do pricing
+  - `payload-currency` — moeda
+  - `payload-company_id` — CNPJ da empresa
+- **Problema diagnosticado**: Operation nature errado, data incorreta, gross/net invertido, empresa errada
+
+---
+
+### Debug Point 7: Preco Unitario
+
+- **Classe**: `CL_TXS_ITEMS_BR`
+- **Metodo**: `GET_UNIT_PRICE` (despacha para `GET_UNIT_PRICE_MM` ou `GET_UNIT_PRICE_SD`)
+- **O que verificar**:
+  - `lv_unit_price` — preco unitario do item (deve ser > 0)
+  - `ls_pricing_value-kwert` — valor base da condition usada como referencia de preco
+  - Cenario MM vs SD: metodo correto sendo chamado
+- **Problema diagnosticado**: Preco base zero ou incorreto no payload enviado ao Tax Engine
+
+---
+
+### Debug Point 8: Quantidade
+
+- **Classe**: `CL_TXS_ITEMS_BR`
+- **Metodo**: `GET_QUANTITY` / `GET_QUANTITY_TAXABLE`
+- **O que verificar**:
+  - `result` — quantidade do item
+  - Feature toggle `GLO_LOG_BR_MAA_NF_AFD_MAPPING` — afeta quantidade em cenarios de invoice com MAA
+- **Problema diagnosticado**: Quantidade incorreta (especialmente em invoice com AFD/MAA)
+
+---
+
+### Debug Point 9: NCM e Classificacoes Fiscais
+
+- **Classe**: `CL_TXS_ITEM_CLASSIFICATIONS_BR`
+- **Metodo**: `GET_MATERIAL_NCM` / `APPEND_ITEM_CLASSIFICATIONS`
+- **O que verificar**:
+  - `isc_code` — NCM do material (8 digitos, sem pontos — ex: `84719012`)
+  - `pricing_context->get_item()->steuc` — valor bruto do NCM vindo do KOMP
+  - CEST, EAN — outras classificacoes fiscais adicionadas
+  - `item_classifications[]` — lista completa de classificacoes do item
+- **Segundo breakpoint**: `CL_TXS_MATERIAL_INFO_FORMATTER`, metodo `FORMAT_NCM`
+  - Remove pontos, toma 8 caracteres
+- **Problema diagnosticado**: NCM vazio ou formato errado (pontos nao removidos, menos de 8 digitos)
+- **Acao se falhar**: Verificar cadastro de material `MARC-STEUC`; para STO verificar planta de origem
+
+---
+
+### Debug Point 10: CNPJ
+
+- **Classe**: `CL_TXS_PARTY_BR`
+- **Metodo**: `GET_VALUE_CNPJ`
+- **O que verificar**:
+  - `tax_number` — CNPJ numerico (14 digitos, sem formatacao)
+  - Origem: empresa (T001/J_1BBRANCH) ou parceiro de negocios (LFA1/KNA1)
+- **Problema diagnosticado**: CNPJ ausente ou com formatacao (pontos/barras)
+
+---
+
+### Debug Point 11: CNAE
+
+- **Classe**: `CL_TXS_CNAE_BR`
+- **Metodo**: Depende do cenario:
+  - MM compra material: `CNAE_FOR_MM_BP_MAT` + `CNAE_FOR_MM_PLANT_MAT`
+  - MM compra servico: `CNAE_FOR_MM_BP_SERV` + `CNAE_FOR_MM_PLANT_SERV`
+  - SD venda material: `CNAE_FOR_SD_BP_MAT` + `CNAE_FOR_SD_PLANT_MAT`
+- **O que verificar**:
+  - Resultado CNAE retornado
+  - Fonte do CNAE: dados mestre — `LFA1-CNAE` (fornecedor), `KNA1-CNAE` (cliente), `J_1BBRANCH-CNAE` (planta). ~~BRF+ descontinuado no TXS~~
+- **Problema diagnosticado**: CNAE vazio (causa ISS incorreto, especialmente em servicos)
+- **Acao se falhar**: Preencher CNAE nos dados mestre: `LFA1-CNAE`, `KNA1-CNAE` ou `J_1BBRANCH-CNAE`
+
+---
+
+### Debug Point 12: Locations (Enderecos)
+
+- **Classe**: `CL_TXS_LOCATIONS_BR`
+- **Metodo**: `ADD_LOCATIONS` (despacha internamente para cenario especifico)
+- **O que verificar**:
+  - `_locations[]` — lista de locations do payload:
+    - `type` — `SHIP_FROM`, `SHIP_TO`, `CONTRACT_FROM`, `CONTRACT_TO`, `SERVICE_LOCATION`
+      Fonte: `if_txs_constants.abap:131-138` (deprecados, agora via Internal Codes)
+    - `state` — UF do estado (2 caracteres)
+    - `country` — pais
+    - `is_bp_tax_registered` — se o parceiro e contribuinte
+  - Cenarios criticos: STO (ambas as plantas), intercompany, importacao
+- **Problema diagnosticado**: UF incorreto, falta ship_from/to, B2B vs B2C errado, endereco de entrega diferente do endereco fiscal
+
+---
+
+## Fase 4 — Comunicacao HTTP
+
+### Debug Point 13: HTTP POST
+
+- **Classe**: `CL_TXS_COMMUNICATION`
+- **Metodo**: `POST`
+- **Onde no codigo**:
+  Fonte: `cl_txs_communication.abap:330-348`:
+  ```abap
+  method post.
+    try.
+        client->if_rest_resource~post( request ).
+      catch cx_rest_client_exception into data(lx_exception).
+        data(lr_log_dao) = cl_txs_log_dao=>get_instance( ).
+        lr_log_dao->add_std_exception_to_log( i_exception = lx_exception ).
+        raise exception type cx_txs_exception
+          exporting
+            textid      = if_txs_const_exceptions=>http_client_error
+            ...
+    endtry.
+  endmethod.
+  ```
+- **O que verificar**:
+  - `lx_exception` — excecao de rede (`cx_rest_client_exception`)
+  - Headers enviados:
+    - `X-CorrelationID` = `payload->get_payload( )-id` (UUID)
+      Fonte: `cl_txs_communication.abap:97-98`
+    - `X-Routing-Key` = `partner_routing_key` (da TXS_ACTIVATION_EXCEPTION)
+      Fonte: `cl_txs_communication.abap:100-101`
+    - `Content-Type` = `application/json`
+      Fonte: `cl_txs_communication.abap:92`
+    - `Connection` = `keep-alive`
+      Fonte: `cl_txs_communication.abap:94-95`
+- **Segundo breakpoint**: Metodo `FETCH_RESPONSE` (ou `DESERIALIZE` em versoes anteriores)
+  Fonte: `cl_txs_communication.abap:211-242`:
+  - `lv_http_status` — se diferente de `200` (constante `con_http_status_ok`), gera excecao `http_server_error`
+    Fonte: `cl_txs_communication.abap:49` — `data CON_HTTP_STATUS_OK type I value 200`
+  - `error_response_json` — JSON de erro retornado pelo Tax Engine
+- **Problema diagnosticado**: Timeout, erro de rede, Tax Engine offline, status HTTP != 200
+
+---
+
+### Debug Point 14: REST Client e OAuth2
+
+- **Classe**: `CL_TXS_CONNECTION`
+- **Metodo**: `GET_REST_CLIENT`
+- **O que verificar** — sequencia de criacao do client:
+  1. `conn_config` — configuracao Cloud vs On-Premise
+  2. `check_active_connection()` — conexao ativa?
+  3. `create_oauth2_client()` — Client Credentials Flow funciona?
+  4. `create_http_client()` — HTTP client via Logical Port
+  5. `create_rest_client()` — REST client criado?
+  6. `set_token()` — token OAuth2 atribuido?
+- **Onde no codigo**: Chamado em `BUILD_CONNECTION`
+  Fonte: `cl_txs_communication.abap:83-86`:
+  ```abap
+  method build_connection.
+    data(lr_connection) = cl_txs_connection=>get_instance( ).
+    client = lr_connection->get_rest_client( ).
+  endmethod.
+  ```
+- **Problema diagnosticado**: Logical Port nao configurado, token OAuth2 expirado, credenciais Client Credentials incorretas
+
+---
+
+## Fase 5 — Processamento da Response
+
+### Debug Point 15: Parse por Tax Type
+
+- **Classe**: `CL_TXS_TAX_TYPES_VALUES_BR`
+- **Metodo**: Depende do cenario e imposto:
+  - MM: `BUILD_MM_ICMS`, `BUILD_MM_IPI`, `BUILD_MM_PIS`, `BUILD_MM_COFINS`, `BUILD_MM_ISS`, etc.
+  - SD: `BUILD_SD_ICMS`, `BUILD_SD_IPI`, `BUILD_SD_PIS`, `BUILD_SD_COFINS`, etc.
+- **O que verificar**:
+  - `i_tax` (TXS_TAX_VALUE) — estrutura retornada pelo Tax Engine:
+    - `rate` — aliquota do imposto
+    - `taxable` — base de calculo
+    - `value` — valor calculado
+    - `tax_type_code` — tipo de imposto (ICMS, IPI, PIS, COFINS, ISS, etc.)
+    - `exempted_base_percent` — percentual de reducao de base
+    - `exempted_base_amount` — valor de base isenta
+- **Problema diagnosticado**: Aliquota ou valor incorreto retornado pelo Tax Engine, base de calculo zerada
+
+---
+
+### Debug Point 16: Response Buffer (Leitura)
+
+- **Classe**: `CL_TXS_RESPONSE_BUFFER`
+- **Metodo**: `IF_TXS_RESPONSE_BUFFER~GET_RESPONSE`
+- **Onde no codigo**: Chamado em `CL_TXS_CONTROLLER.CALCULATE_TAXES` para tentar ler response do buffer antes de fazer HTTP call
+  Fonte: `cl_txs_controller.abap:198-211`:
+  ```abap
+  try.
+      response = lr_response_buffer->if_txs_response_buffer~get_response(
+        i_request = payload i_pricing_context = pricing_context ).
+    catch cx_txs_response_not_on_buffer.
+      lr_communication->calculate_taxes( ).
+      response = lr_communication->get_response( ).
+      ...
+  endtry.
+  ```
+- **O que verificar**:
+  - `lv_request_hash` — hash SHA1 do payload usado como chave de busca no buffer
+    Fonte: `cl_txs_response_buffer.abap:101-133` — metodo `CALCULATE_REQUEST_HASH`:
+    - Limpa `id` e trunca `date` para 10 caracteres antes de calcular hash
+    - BAdI `txs_badi_response_buffer->prepare_request_to_be_hashed` pode modificar o request antes do hash
+  - Busca no buffer: por `request_hash` + `document_item_key` (ou `document_item_id` para invoice)
+    Fonte: `cl_txs_response_buffer.abap:396-405`
+  - Se `<ls_response_buffer>` nao atribuido: excecao `CX_TXS_RESPONSE_NOT_ON_BUFFER`
+    Fonte: `cl_txs_response_buffer.abap:407-408`
+  - Se `<ls_response_buffer>-response` vazio: excecao `CX_TXS_RESPONSE_NOT_ON_BUFFER`
+    Fonte: `cl_txs_response_buffer.abap:417-419`
+- **Problema diagnosticado**: Response nao encontrada no buffer (hash mismatch), a chamada HTTP da condition TXSC falhou na 1a condition
+
+---
+
+### Debug Point 16b: Response Buffer (Gravacao)
+
+- **Classe**: `CL_TXS_RESPONSE_BUFFER`
+- **Metodo**: `IF_TXS_RESPONSE_BUFFER~ADD_RESPONSE`
+- **Onde no codigo**: Chamado em `CL_TXS_CONTROLLER.CALCULATE_TAXES` apos HTTP call bem-sucedido; e em `CL_TXS_CONTROLLER.ADD_RESPONSE`
+  Fonte: `cl_txs_controller.abap:148-154` e `cl_txs_controller.abap:206-210`
+- **O que verificar**:
+  - `i_request`, `i_response`, `i_pricing_context` — todos devem estar preenchidos
+  - Se vazios: excecao `add_response_buffer_error`
+    Fonte: `cl_txs_response_buffer.abap:255-264`
+  - `lv_request_hash` calculado — se vazio, gera excecao
+    Fonte: `cl_txs_response_buffer.abap:271-277`
+  - Feature toggle `GLO_LOG_BR_EXT_JSON_RESP` — afeta o caminho de gravacao
+    Fonte: `cl_txs_controller.abap:203` — `CONSTANTS ftg_br2_toggle_resconsp TYPE ftg_id VALUE 'GLO_LOG_BR_EXT_JSON_RESP'`
+  - Campos gravados: `trace_guid` (UUID), `ext_tax_code`, `s4_tax_code`, `jurisdiction_code`, `tax_date`
+- **Problema diagnosticado**: Buffer nao preenchido apos HTTP call, tax code nao mapeado no buffer
+
+---
+
+## Fase 6 — Mapeamento para KOMV
+
+### Debug Point 17: Factory do Mapper
+
+- **Classe**: `CL_TXS_COND_MAPPER_FACTORY`
+- **Metodo**: `INITIALIZE`
+- **Onde no codigo**: Chamado em `CL_TXS_CONTROLLER.MAP_TXS_TO_PRICING_FORMULA`
+  Fonte: `cl_txs_controller.abap:624-633`:
+  ```abap
+  data(lr_cond_mapper_factory) = cl_txs_cond_mapper_factory=>get_instance( ).
+  lr_cond_mapper_factory->initialize(
+    exporting
+      i_country         = country
+      i_response        = response
+      i_pricing_context = pricing_context
+      i_cond_type       = c_pricing_condition_record-kschl
+  ).
+  data(lr_condition_mapper) = lr_cond_mapper_factory->get_mapper_instance( ).
+  ```
+- **O que verificar** — logica de instanciacao:
+  Fonte: `cl_txs_cond_mapper_factory.abap:99-138`:
+  1. Busca classe customizada na tabela `TXS_COND_MAP` via `GET_CUSTOMIZED_LINE_BY_KEY`:
+     - Chave: country + `condition_usage-pricing` ('A') + application + pricing procedure + condition type + tax code externo
+     Fonte: `cl_txs_cond_mapper_factory.abap:62-83`
+  2. Se classe customizada encontrada: `CREATE OBJECT mapper_instance TYPE (lv_customized_class_name)`
+     Fonte: `cl_txs_cond_mapper_factory.abap:112-125`
+  3. Se V2: `CL_TXS_STANDARD_TAX_MAP_V2`
+     Fonte: `cl_txs_cond_mapper_factory.abap:128-131`
+  4. Se V1 e pais BR: `CL_TXS_CONDITIONS_MAPPER_BR` (fallback `CL_TXS_STANDARD_TAX_MAP`)
+     Fonte: `cl_txs_cond_mapper_factory.abap:44-59` — metodo `CREATE_COUNTRY_SPECIFIC`:
+     ```abap
+     lv_class_name = con_class_basic_name && '_' && i_country.
+     try.
+         create object mapper_instance type (lv_class_name) ...
+       catch cx_sy_create_object_error.
+         mapper_instance = new cl_txs_standard_tax_map( ... ).
+     endtry.
+     ```
+- **Problema diagnosticado**: Mapper incorreto, classe customizada interceptando, V2 quando deveria ser V1
+
+---
+
+### Debug Point 18: Mapeamento Principal
+
+- **Classe**: `CL_TXS_CONDITIONS_MAPPER_BR`
+- **Metodo**: `MAP_TAX_TYPE_TO_CONDITION` (redefinido da classe pai `CL_TXS_CONDITIONS_MAPPER`)
+- **Onde no codigo**:
+  Fonte: `cl_txs_conditions_mapper_br.abap:455-501`:
+  ```abap
+  method map_tax_type_to_condition.
+    data(ls_condition_map) = select_nfe_cond_map_by_key( ).
+    case condition_type.
+      when ls_condition_map-rate.
+        map_cond_rate( ls_condition_map ).
+      when ls_condition_map-value.
+        map_cond_amount( ls_condition_map ).
+      when ls_condition_map-base.
+        map_cond_base( ls_condition_map ).
+      when ls_condition_map-basered1.
+        map_cond_base_reduction_rate( ls_condition_map ).
+      ...
+      when others.
+        check_to_set_cond_to_exclusion( ).
+    endcase.
+  ```
+- **O que verificar**:
+  - `ls_condition_map` (tipo `J_1BNFTXCOND`) — registro de mapeamento da tabela `J_1BNFTXCOND`:
+    - Buscado via `SELECT_NFE_COND_MAP_BY_KEY`
+      Fonte: `cl_txs_conditions_mapper_br.abap:517-527` — usa `cl_txs_dao_br->select_nfe_cond_map_by_key()` com chave: usage `'A'` + application + pricing procedure + condition type + tax types range
+    - Campos: `rate`, `value`, `base`, `basered1`, `excbas`, `othbas`, `srate`, `taxtyp`
+  - `condition_type` — o `KSCHL` da condition sendo processada
+  - Apos o CASE: `pricing_condition_record-kwert`, `pricing_condition_record-kbetr`, `pricing_condition_record-kawrt`
+    - Exemplo para `MAP_COND_AMOUNT`:
+      Fonte: `cl_txs_conditions_mapper_br.abap:296-305`:
+      ```abap
+      pricing_condition_record-kwert = ls_tax_type_values-value.
+      pricing_condition_record-kbetr = ls_tax_type_values-rate * con_factor.
+      pricing_condition_record-kawrt = ls_tax_type_values-taxable.
+      ```
+  - Se nenhum `CASE` matched: vai para `WHEN OTHERS` que chama `check_to_set_cond_to_exclusion()` — condition fica com KINAK='Z'
+- **Problema diagnosticado**: KOMV nao preenchido, valor errado, condition type sem registro na `J_1BNFTXCOND`
+
+---
+
+### Debug Point 19: Tax Values Lookup
+
+- **Classe**: `CL_TXS_CONDITIONS_MAPPER_BR`
+- **Metodo**: `GET_TAX_VALUES_BY_CONDITION`
+- **Onde no codigo**:
+  Fonte: `cl_txs_conditions_mapper_br.abap:277-280`:
+  ```abap
+  method get_tax_values_by_condition.
+    r_tax_type_values = response->get_tax_type_values( )->get_tax_values_by_tax_type(
+      i_item_id  = conv string( pricing_context->get_item( )-kposn )
+      i_tax_type = conv string( i_condition_map-taxtyp ) ).
+  endmethod.
+  ```
+- **O que verificar**:
+  - `r_tax_type_values` (tipo `TXS_MAPPED_TAX_TYPES`) — resultado da busca:
+    - `rate` — aliquota
+    - `value` — valor do imposto
+    - `taxable` — base de calculo
+    - `exempted_base_percent` — percentual de reducao de base
+    - `exempted_base_amount` — valor de base isenta
+    - `other_base_amount` — outra base (ex: ICMS-ST)
+  - `i_condition_map-taxtyp` — tax type buscado (ex: ICMS, IPI, PIS, COFINS)
+  - Se vazio: o Tax Engine nao retornou esse tax type na response
+- **Problema diagnosticado**: Tax type nao encontrado na response (Tax Engine nao calculou esse imposto)
+
+---
+
+### Debug Point 19b: Exclusao de Condition no Parent Class
+
+- **Classe**: `CL_TXS_CONDITIONS_MAPPER` (classe pai)
+- **Metodo**: `SET_CONDITION_TO_EXCLUSION`
+- **Onde no codigo**:
+  Fonte: `cl_txs_conditions_mapper.abap:149-151`:
+  ```abap
+  method SET_CONDITION_TO_EXCLUSION.
+    pricing_condition_record-kinak = if_txs_constants=>condition_inactivity_indicator-used_internally.
+  endmethod.
+  ```
+  - `used_internally` = `'Z'`
+    Fonte: `if_txs_constants.abap:13` — `used_internally type kinak value 'Z'`
+- **O que verificar**: Se a condition esta sendo excluida (`KINAK = 'Z'`) quando nao deveria
+- **Problema diagnosticado**: Condition setada para exclusao (KINAK='Z') indevidamente
+
+---
+
+## Fase 7 — Verificacao de Mapeamento
+
+### Debug Point 20: Check Mapping
+
+- **Classe**: `CL_TXS_CONDITION_PROCESSING`
+- **Metodo**: `IF_TXS_CONDITION_PROCESSING~CHECK_MAPPING`
+- **Onde no codigo**: Chamado ao final de `PROCESS_CONDITION_RECORD`
+  Fonte: `cl_txs_controller.abap:666-668`:
+  ```abap
+  cl_txs_condition_processing=>get_instance( country )->check_mapping(
+    condition = c_pricing_condition_record
+    procedure = pricing_context->get_pricing_procedure( ) ).
+  ```
+- **Logica completa**:
+  Fonte: `cl_txs_condition_processing.abap:99-127`:
+  ```abap
+  method if_txs_condition_processing~check_mapping.
+    if is_service_call_condition( condition ).
+      clear mapped.
+      clear last_condition.
+      return.
+    endif.
+    if mapped = abap_true.
+      return.
+    endif.
+    if condition-kinak = if_txs_constants=>condition_inactivity_indicator-used_internally.
+      if is_last_condition( condition ).
+        raise exception type cx_txs_exception
+          exporting textid = if_txs_const_exceptions=>mapping_condition_error ...
+      endif.
+    else.
+      mapped = abap_true.
+    endif.
+  endmethod.
+  ```
+- **O que verificar**:
+  - `condition-kinak` — deve ser vazio para pelo menos 1 condition (nao a TXSC)
+    - `'Z'` = `used_internally` (exclusao interna)
+    - `'X'` = `via_formulas_or_incorrect` (erro)
+  - `mapped` (atributo da classe) — flag booleano; se `abap_true` em algum momento, a verificacao passa
+  - `is_last_condition()` — verifica se e a ULTIMA condition com formula 279
+    Fonte: `cl_txs_condition_processing.abap:69-81`:
+    ```abap
+    method determine_last_condition.
+      constants con_formula_279 type kofrm value 0000279.
+      loop at conditions assigning field-symbol(<line>) where kofrm = con_formula_279.
+        condition = <line>.
+      endloop.
+      last_condition = condition.
+    endmethod.
+    ```
+  - Se e a ULTIMA condition e NENHUMA mapeou com sucesso (`mapped = abap_false` e `kinak = 'Z'`): excecao `mapping_condition_error`
+  - Se pelo menos 1 condition ja mapeou: `mapped = abap_true`, OK
+- **Problema diagnosticado**: Erro `mapping_condition_error` — nenhuma condition foi mapeada na pricing procedure
+- **Solucao tipica**: Verificar se a pricing procedure tem os condition types corretos configurados na `J_1BTXCOND` (ex: BX16/ICM1 para ICMS, BIP0/IPI1 para IPI, IPIS/BPI1 para PIS, ICOF/BCO1 para COFINS)
+
+---
+
+## Fase 8 — Pos-processamento
+
+### Debug Point 21: Error Handler
+
+- **Classe**: `CL_TXS_CONTROLLER`
+- **Metodo**: `HANDLE_PRICING_ERROR`
+- **Onde no codigo**: Chamado no `CATCH cx_txs_exception` de `IF_TXS_CONTROLLER~EXECUTE`
+  Fonte: `cl_txs_controller.abap:504-534`:
+  ```abap
+  CATCH cx_txs_exception INTO DATA(lx_txs_exception).
+    ...
+    IF lv_overwrite_standard = abap_false.
+      IF lr_controller->is_service_call_cond_type( c_pricing_condition_record-kschl ).
+        lr_controller->clear_resp_buffer_by_error( ).
+      ENDIF.
+      lr_controller->add_app_log( i_exception = lx_txs_exception ).
+      lr_controller->handle_pricing_error(
+        EXPORTING i_exception               = lx_txs_exception
+        CHANGING  c_pricing_item            = c_pricing_item
+                  c_pricing_condition_record = c_pricing_condition_record ).
+    ENDIF.
+  ```
+- **O que verificar**:
+  Fonte: `cl_txs_controller.abap:334-394`:
+  - `lv_msg_type` — tipo da mensagem (`E`, `W`, `S`)
+  - `lv_msg_no` — numero da mensagem (message class `TXS_MESSAGES`)
+    Fonte: `if_txs_constants.abap:82` — `MESSAGE_CLASS type SYMSGID value 'TXS_MESSAGES'`
+  - `c_pricing_item-prsok` — setado para `abap_false` (pricing NOT okay)
+    Fonte: `cl_txs_controller.abap:351`
+  - `c_pricing_condition_record-kinak` — setado para `'X'` (via_formulas_or_incorrect)
+    Fonte: `cl_txs_controller.abap:352` — `if_txs_constants=>condition_inactivity_indicator-via_formulas_or_incorrect`
+  - `c_pricing_condition_record-fxmsg` / `c_pricing_item-fxmsg` — numero da mensagem de erro
+  - Billing document: verifica se e `billing_doc_transfer` — tratamento especial de mensagem
+    Fonte: `cl_txs_controller.abap:356-376`
+  - `clear_resp_buffer_by_error()` — limpa buffer quando TXSC falha, para evitar respostas parciais
+    Fonte: `cl_txs_controller.abap:523-524`
+- **Problema diagnosticado**: Qualquer excecao `CX_TXS_EXCEPTION` no pipeline TXS
+
+---
+
+### Debug Point 22: LFD Recording (Brasil)
+
+- **Classe**: `CL_TXS_CONTROLLER_BR`
+- **Metodo**: `CALL_TXS_FROM_PRICING_FORMULA` (redefinido) e `RECORD_LFD_TAXES`
+- **Onde no codigo**:
+  Fonte: `cl_txs_controller_br.abap:58-63`:
+  ```abap
+  method call_txs_from_pricing_formula.
+    call method super->call_txs_from_pricing_formula( ).
+    record_lfd_taxes( ).
+  endmethod.
+  ```
+  Fonte: `cl_txs_controller_br.abap:114-123`:
+  ```abap
+  METHOD record_lfd_taxes.
+    DATA(lv_item_number) = cl_txs_lfd_key_determiner=>get_instance( )->get_lfd_key_item_number( pricing_context ).
+    DATA(lv_document_number) = cl_txs_lfd_key_determiner=>get_instance( )->get_lfd_key_document_number( pricing_context ).
+    DATA(lt_tax_value) = cl_txs_tax_values_br=>get_instance( )->get_tax_values( pricing_context ).
+    cl_txs_lfd_recorder=>get_instance( )->fill_lfd_taxes(
+      item_number     = lv_item_number
+      document_number = lv_document_number
+      tax_values      = lt_tax_value ).
+  ENDMETHOD.
+  ```
+- **O que verificar**:
+  - `lv_item_number` — numero do item no LFD (varia por cenario: PO, MIGO, MIRO, SD)
+    - Key Determiner: `CL_TXS_LFD_KEY_DETERMINER` despacha para subclasses:
+      - `CL_TXS_LFD_KEY_DETERMINER_PO` (compra)
+      - `CL_TXS_LFD_KEY_DETERMINER_MIGO` (entrada de mercadoria)
+      - `CL_TXS_LFD_KEY_DETERMINER_MIRO` (verificacao de fatura)
+      - `CL_TXS_LFD_KEY_DETERMINER_SD` (vendas)
+  - `lv_document_number` — numero do documento LFD
+  - `lt_tax_value` — valores fiscais calculados pelo TXS (via `CL_TXS_TAX_VALUES_BR`)
+  - `cl_txs_lfd_recorder=>get_instance( )->fill_lfd_taxes()` — grava no `GSLOG_LOCAL_FISCAL_DATA`
+- **Problema diagnosticado**: Dados fiscais nao gravados no LFD para Nota Fiscal, item/documento number incorretos
+
+---
+
+### Debug Point 23: BAdI Pre/Post Processing
+
+- **Classe**: `CL_TXS_CONTROLLER`
+- **BAdI**: `TXS_BADI_CONTROLLER`
+- **Metodos**: `pre_processing` / `post_processing` / `error_handling`
+- **Onde no codigo**:
+  Pre-processing — Fonte: `cl_txs_controller.abap:413-438`:
+  ```abap
+  GET BADI badi_controller.
+  CALL BADI badi_controller->pre_processing
+    EXPORTING i_pricing_header = ... i_pricing_condition_records = ... ...
+    CHANGING  c_pricing_item = ... c_pricing_condition_record = ... ...
+    RECEIVING r_overwrite_standard = lv_overwrite_standard.
+  IF lv_overwrite_standard = abap_true.
+    RETURN.
+  ENDIF.
+  ```
+  Post-processing — Fonte: `cl_txs_controller.abap:538-557`:
+  ```abap
+  GET BADI badi_controller.
+  CALL BADI badi_controller->post_processing
+    EXPORTING ... CHANGING c_pricing_item = ... c_pricing_condition_record = ... ...
+  ```
+  Error handling — Fonte: `cl_txs_controller.abap:507-519`:
+  ```abap
+  CALL BADI badi_controller->error_handling
+    EXPORTING i_exception = lx_txs_exception ...
+    RECEIVING r_overwrite_standard = lv_overwrite_standard.
+  ```
+- **O que verificar**:
+  - `r_overwrite_standard` — se `true`, a logica standard do TXS e PULADA (pre_processing) ou o error handling standard e pulado
+  - `c_pricing_condition_record` — pode ser alterado pelo BAdI
+  - `c_pricing_item` — pode ser alterado pelo BAdI
+  - Se `cx_badi_not_implemented`: nenhuma implementacao ativa (normal em sistemas sem customizacao)
+- **Problema diagnosticado**: BAdI customizado sobrescrevendo logica standard, erros ocultos no error_handling customizado
+
+---
+
+### Debug Point 23b: BAdI Calculate Taxes
+
+- **Classe**: `CL_TXS_CONTROLLER`
+- **BAdI**: `TXS_BADI_CONTROLLER`
+- **Metodo**: `calculate_taxes` (no BAdI)
+- **Onde no codigo**: Chamado em `CL_TXS_CONTROLLER.CALCULATE_TAXES` ANTES do buffer check
+  Fonte: `cl_txs_controller.abap:183-196`:
+  ```abap
+  try.
+      data badi_controller type ref to txs_badi_controller.
+      get badi badi_controller.
+      call badi badi_controller->calculate_taxes
+        exporting i_communication = lr_communication i_response_buffer = lr_response_buffer
+        receiving r_response      = response.
+    catch cx_badi_not_implemented.
+      clear response.
+  endtry.
+  ```
+- **O que verificar**:
+  - Se `response` retornado pelo BAdI e `BOUND`: a resposta do BAdI sera usada, sem buffer check nem HTTP call
+  - Se `cx_badi_not_implemented` ou `response IS NOT BOUND`: fluxo standard continua
+- **Problema diagnosticado**: BAdI de calculo interceptando o fluxo standard, retornando response customizada
+
+---
+
+### Debug Point 24: BAdI Response Buffer
+
+- **Classe**: `CL_TXS_RESPONSE_BUFFER`
+- **BAdI**: `TXS_BADI_RESPONSE_BUFFER`
+- **Metodos**: `prepare_request_to_be_hashed`, `add_response`, `get_response`
+- **Onde no codigo**:
+  - Hash: Fonte: `cl_txs_response_buffer.abap:119-128` — modifica request antes do hash SHA1
+  - Add: Fonte: `cl_txs_response_buffer.abap:233-247` — pode sobrescrever a logica de gravacao
+  - Get: Fonte: `cl_txs_response_buffer.abap:371-384` — pode sobrescrever a logica de leitura
+- **O que verificar**:
+  - `r_overwrite_standard` no `add_response` — se `true`, gravacao standard e pulada
+  - `r_response` no `get_response` — se retornado `BOUND`, leitura standard e pulada
+  - `c_request` no `prepare_request_to_be_hashed` — pode alterar payload antes do calculo do hash
+- **Problema diagnosticado**: BAdI alterando hash ou buffer, causando mismatch em leituras subsequentes
+
+---
+
+## Tabela Resumo — Referencia Rapida
+
+| # | Classe::Metodo | Fase | Problema |
+|---|----------------|------|----------|
+| 1 | `CL_LOGBR_FILL_LFD_ON_PRINCING::RUN` | 1 | NCM/CFOP/dados fiscais vazios |
+| 2 | `CL_TXS_SWITCH::IS_ACTIVE` | 1 | TXS nao ativo |
+| 3 | `CL_TXS_PRICING_CONTEXT::CONSTRUCTOR` | 1 | Dados de entrada incorretos |
+| 4 | `CL_TXS_CONTROLLER::PROCESS_CONDITION_RECORD` | 2 | Decisao HTTP vs buffer |
+| 5 | `CL_TXS_PAYLOAD_TYPE::DETERMINE_PAYLOAD_TYPE` | 2 | Payload V1/V2 errado |
+| 6 | `CL_TXS_PAYLOAD_BR::BUILD_HEADER` | 3 | Header incorreto |
+| 7 | `CL_TXS_ITEMS_BR::GET_UNIT_PRICE` | 3 | Preco base errado |
+| 8 | `CL_TXS_ITEMS_BR::GET_QUANTITY` | 3 | Quantidade errada |
+| 9 | `CL_TXS_ITEM_CLASSIFICATIONS_BR::GET_MATERIAL_NCM` | 3 | NCM vazio |
+| 10 | `CL_TXS_PARTY_BR::GET_VALUE_CNPJ` | 3 | CNPJ ausente |
+| 11 | `CL_TXS_CNAE_BR::CNAE_FOR_*` | 3 | CNAE vazio |
+| 12 | `CL_TXS_LOCATIONS_BR::ADD_LOCATIONS` | 3 | Endereco incorreto |
+| 13 | `CL_TXS_COMMUNICATION::POST` | 4 | Erro HTTP |
+| 14 | `CL_TXS_CONNECTION::GET_REST_CLIENT` | 4 | OAuth2/Logical Port |
+| 15 | `CL_TXS_TAX_TYPES_VALUES_BR::BUILD_MM_*` | 5 | Valor imposto errado |
+| 16 | `CL_TXS_RESPONSE_BUFFER::GET_RESPONSE` | 5 | Buffer vazio |
+| 16b | `CL_TXS_RESPONSE_BUFFER::ADD_RESPONSE` | 5 | Buffer nao preenchido |
+| 17 | `CL_TXS_COND_MAPPER_FACTORY::INITIALIZE` | 6 | Mapper errado |
+| 18 | `CL_TXS_CONDITIONS_MAPPER_BR::MAP_TAX_TYPE_TO_CONDITION` | 6 | KOMV errado |
+| 19 | `CL_TXS_CONDITIONS_MAPPER_BR::GET_TAX_VALUES_BY_CONDITION` | 6 | Tax type nao encontrado |
+| 19b | `CL_TXS_CONDITIONS_MAPPER::SET_CONDITION_TO_EXCLUSION` | 6 | Exclusao indevida |
+| 20 | `CL_TXS_CONDITION_PROCESSING::CHECK_MAPPING` | 7 | Erro mapeamento |
+| 21 | `CL_TXS_CONTROLLER::HANDLE_PRICING_ERROR` | 8 | Excecao geral |
+| 22 | `CL_TXS_CONTROLLER_BR::RECORD_LFD_TAXES` | 8 | LFD nao gravado |
+| 23 | `CL_TXS_CONTROLLER::{BAdI}pre/post_processing` | 8 | BAdI sobrescrevendo |
+| 23b | `CL_TXS_CONTROLLER::{BAdI}calculate_taxes` | 5 | BAdI interceptando calculo |
+| 24 | `CL_TXS_RESPONSE_BUFFER::{BAdI}response_buffer` | 5 | BAdI alterando buffer |
+
+---
+
+## Feature Toggles Relevantes
+
+| Toggle | Descricao | Efeito |
+|--------|-----------|--------|
+| `TXS_ACTIVATION` | Ativacao por app + procedure | Liga/desliga TXS por cenario |
+| `TXS_ACTIVATION_EXCEPTION` | Excecoes de ativacao | Desliga TXS para empresa/planta especifica |
+| `GLO_LOG_BR_EXT_JSON_RESP` | Log de JSON response | Habilita log detalhado da response e afeta caminho de gravacao do buffer |
+| `GLO_LOG_BR_MAA_NF_AFD_MAPPING` | Quantidade AFD/MAA | Afeta calculo de quantidade em invoice com MAA |
+
+---
+
+## Tabelas de Customizing Relevantes
+
+| Tabela | Descricao | Campos-chave |
+|--------|-----------|-------------|
+| `TXS_ACTIVATION` | Ativacao do TXS | APPLICATION, PRICING_NAME |
+| `TXS_ACTIVATION_EXCEPTION` | Excecoes de ativacao | APPLICATION, PRICING_NAME, COUNTRY, COMPANY_CODE |
+| `TXS_COND_MAP` | Classe customizada de mapper | COUNTRY, COND_USAGE, APPLICATION, PRICING_NAME, COND_TYPE, TAX_CODE |
+| `TXS_TAX_CODE_MAP` / `TXS_TAX_CODE_MAP_C` | Mapeamento tax code externo → S/4 | COUNTRY, COND_USAGE, APPLICATION, PRICING_NAME, EXTERNAL_TAX_CODE |
+| `J_1BNFTXCOND` / `J_1BTXCOND` | Mapeamento condition type → tax type | USAGE, APPLICATION, PROCEDURE, CONDITION, TAXTYP |
+
+---
+
+## Headers HTTP para Debug
+
+| Header | Valor | Uso |
+|--------|-------|-----|
+| `X-CorrelationID` | `payload.id` (UUID) | Rastrear requisicao no Tax Engine |
+| `X-Routing-Key` | `partner_routing_key` | Identificar parceiro de roteamento |
+| `Content-Type` | `application/json` | Sempre JSON |
+| `Connection` | `keep-alive` | Reutiliza conexao |
+
+Fonte: `cl_txs_communication.abap:54` — `HEADER_CORRELATION_ID type STRING value 'X-CorrelationID'`
+Fonte: `cl_txs_communication.abap:55` — `HEADER_ROUTING_KEY type STRING value 'X-Routing-Key'`
+
+---
+
+## Application Log (SLG1)
+
+- **Classe**: `CL_TXS_LOG_DAO`
+- **Metodo**: `add_exception_to_log(exception, payload_json, response_json)`
+- **Chamado em**: `CL_TXS_CONTROLLER.ADD_APP_LOG`
+  Fonte: `cl_txs_controller.abap:120-133`:
+  ```abap
+  method add_app_log.
+    ...
+    cl_txs_log_dao=>get_instance( )->add_exception_to_log(
+      i_exception = i_exception
+      i_payload   = lv_payload_json
+      i_response  = lv_response_error_json ).
+  endmethod.
+  ```
+- **Log Object**: `TXS_LOG` / Sub-object: `TXS_LOG_GEN`
+  Fonte: `if_txs_constants.abap:72-74`
+- **Conteudo**: Excecao completa (mensagem, classe, metodo), payload JSON, response JSON, Correlation ID
+- **Acesso**: Transacao SLG1, objeto `TXS_LOG`
+
+---
+
+## Constantes Importantes (Verificadas no Codigo)
+
+| Constante | Valor | Fonte |
+|-----------|-------|-------|
+| `SERVICE_CALL` | `'TXSC'` | `if_txs_constants.abap:146` |
+| `TXSC_CONDITION_INACTIVE` | `'Z'` (KINAK) | `if_txs_constants.abap:83` |
+| `condition_inactivity_indicator-via_formulas_or_incorrect` | `'X'` (KINAK) | `if_txs_constants.abap:12` |
+| `condition_inactivity_indicator-used_internally` | `'Z'` (KINAK) | `if_txs_constants.abap:13` |
+| `condition_usage-pricing` | `'A'` (KVEWE) | `if_txs_constants.abap:60` |
+| `application-taxes` | `'TX'` (KAPPL) | `if_txs_constants.abap:7` |
+| `application-sales_and_distribution` | `'V'` (KAPPL) | `if_txs_constants.abap:8` |
+| `calculation_engine-partner_engine` | `'P'` | `if_txs_constants.abap:200` |
+| `PAYLOAD_VERSION_V2` | `'V2'` | `if_txs_constants.abap:204` |
+| `MESSAGE_CLASS` | `'TXS_MESSAGES'` | `if_txs_constants.abap:82` |
+| `DEFAULT_MAPPING_CLASS` | `'CL_TXS_STANDARD_TAX_MAP'` | `if_txs_constants.abap:113` |
+| `AUTO_DETERMINATION_TAX_CODE` | `'TS'` (MWSKZ) | `if_txs_constants.abap:166` |
+| Formula 279 | `0000279` (KOFRM) | `cl_txs_condition_processing.abap:71` |
+| `CON_HTTP_STATUS_OK` | `200` | `cl_txs_communication.abap:49` |
+
+---
+
+## Fluxo de Execucao Resumido
+
+```
+IF_TXS_CONTROLLER~EXECUTE (entrada)
+  |
+  +-- [1] CL_LOGBR_FILL_LFD_ON_PRINCING.RUN (preenche LFD)
+  +-- [23] BAdI pre_processing (pode pular tudo se r_overwrite_standard = true)
+  +-- [2] CL_TXS_SWITCH.IS_ACTIVE (verifica ativacao)
+  +-- [3] CL_TXS_PRICING_CONTEXT.CONSTRUCTOR (cria contexto)
+  |
+  +-- PROCESS_CONDITION_RECORD
+  |     +-- [5] CL_TXS_PAYLOAD_TYPE.DETERMINE_PAYLOAD_TYPE
+  |     |
+  |     +-- Se TXSC (service call):
+  |     |     +-- CALL_TXS_FROM_PRICING_FORMULA
+  |     |     |     +-- INITIALIZE
+  |     |     |     +-- BUILD_PAYLOAD
+  |     |     |     |     +-- [6] BUILD_HEADER
+  |     |     |     |     +-- [7] GET_UNIT_PRICE
+  |     |     |     |     +-- [8] GET_QUANTITY
+  |     |     |     |     +-- [9] GET_MATERIAL_NCM / APPEND_ITEM_CLASSIFICATIONS
+  |     |     |     |     +-- [10] GET_VALUE_CNPJ
+  |     |     |     |     +-- [11] CNAE_FOR_*
+  |     |     |     |     +-- [12] ADD_LOCATIONS
+  |     |     |     +-- CALCULATE_TAXES
+  |     |     |     |     +-- [23b] BAdI calculate_taxes
+  |     |     |     |     +-- [16] GET_RESPONSE (buffer)
+  |     |     |     |     +-- [13] POST (HTTP)
+  |     |     |     |     +-- [14] GET_REST_CLIENT (OAuth2)
+  |     |     |     |     +-- [15] BUILD_MM_ICMS etc. (parse response)
+  |     |     |     |     +-- [16b] ADD_RESPONSE (grava buffer)
+  |     |     |     +-- [22] RECORD_LFD_TAXES (apenas BR)
+  |     |
+  |     +-- Se outra condition (buffer read):
+  |     |     +-- MAP_TXS_TO_PRICING_FORMULA
+  |     |           +-- [17] INITIALIZE (factory)
+  |     |           +-- [18] MAP_TAX_TYPE_TO_CONDITION
+  |     |           +-- [19] GET_TAX_VALUES_BY_CONDITION
+  |     |           +-- [19b] SET_CONDITION_TO_EXCLUSION (se nao matched)
+  |     |
+  |     +-- [20] CHECK_MAPPING (verifica se pelo menos 1 mapeou)
+  |
+  +-- CATCH cx_txs_exception
+  |     +-- BAdI error_handling
+  |     +-- [21] HANDLE_PRICING_ERROR
+  |
+  +-- [23] BAdI post_processing
+```
