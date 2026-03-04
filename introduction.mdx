@@ -1,8 +1,9 @@
 ---
-title: "LOCBR Knowledge Base"
-description: "Base tecnica de Localizacao Brasil para SAP S/4HANA Cloud — Tax Service, Nota Fiscal, ABAP Cloud"
+title: LOCBR Knowledge Base
+description: >-
+  Base tecnica de Localizacao Brasil para SAP S/4HANA Cloud — Tax Service, Nota
+  Fiscal, ABAP Cloudi
 ---
-
 Base de conhecimento tecnico de **Localizacao Brasil (LOCBR)** no SAP S/4HANA Cloud.
 Elaborada por Fabio Dezan.
 
@@ -10,14 +11,16 @@ Elaborada por Fabio Dezan.
 
 ## O que voce encontra aqui
 
-<Columns cols={3}>
-  <Card title="Tax Service (TXS)" icon="calculator" href="/txs/overview">
+<Columns cols="3">
+  <Card title="Tax Service (TXS)" href="/txs/overview" icon="calculator" horizontal="false">
     Motor de calculo externo para impostos brasileiros — arquitetura de 8 fases, payload, response, troubleshooting e extensibilidade.
   </Card>
-  <Card title="Treinamento TXS" icon="graduation-cap" href="/txs/treinamento/dia1-arquitetura">
+
+  <Card title="Treinamento TXS" href="/txs/treinamento/dia1-arquitetura" icon="graduation-cap" horizontal="false">
     Handouts de treinamento de 4 dias cobrindo arquitetura, dados mestres, configuracao e debug.
   </Card>
-  <Card title="S/4HANA Cloud" icon="cloud" href="/s4hana/rap-model">
+
+  <Card title="S/4HANA Cloud" href="/s4hana/rap-model" icon="cloud" horizontal="false">
     RAP, ABAP Cloud, Clean Core, Key User Extensibility e fundamentos de Nota Fiscal.
   </Card>
 </Columns>
@@ -26,17 +29,20 @@ Elaborada por Fabio Dezan.
 
 ## Conteudo Principal
 
-<Columns cols={2}>
-  <Card title="Payload Reference" icon="file-text" href="/txs/payload/header">
+<Columns cols="2">
+  <Card title="Payload Reference" href="/txs/payload/header" icon="file-text" horizontal="false">
     Referencia completa de cada estrutura do payload TXS com origem dos dados e breakpoints ADT.
   </Card>
-  <Card title="Pipeline por Fase" icon="arrow-right" href="/txs/pipeline/request">
+
+  <Card title="Pipeline por Fase" href="/txs/pipeline/request" icon="arrow-right" horizontal="false">
     Fluxo de execucao do TXS documentado fase a fase: request, comunicacao HTTP, response e pos-processamento.
   </Card>
-  <Card title="Troubleshooting" icon="alert-triangle" href="/txs/reference/troubleshooting">
+
+  <Card title="Troubleshooting" href="/txs/reference/troubleshooting" icon="alert-triangle" horizontal="false">
     10 cenarios de problema com classes, metodos, variaveis e solucoes tipicas.
   </Card>
-  <Card title="Cheat Sheets" icon="clipboard" href="/txs/reference/cheatsheet-conditions">
+
+  <Card title="Cheat Sheets" href="/txs/reference/cheatsheet-conditions" icon="clipboard" horizontal="false">
     Condition types, tabelas de configuracao e classes de debug em formato de consulta rapida.
   </Card>
 </Columns>
@@ -46,11 +52,16 @@ Elaborada por Fabio Dezan.
 ## Sobre esta base
 
 Esta documentacao foi construida a partir de:
+
 - **Codigo-fonte ABAP** baixado via SAP ADT REST API e catalogado (234+ artefatos TXS)
+
 - **Treinamento presencial** de 4 dias sobre Tax Service
+
 - **Analise tecnica** de classes, interfaces e estruturas do pipeline TXS
+
 - **Verificacao contra codigo-fonte** — todos os valores tecnicos (condition types, constantes, nomes de tabelas) foram validados contra o codigo real
 
-<Callout kind="info">
-Todos os valores tecnicos desta base foram verificados contra o codigo-fonte ABAP. Quando um valor nao pode ser confirmado, ele e marcado com aviso explicito.
+<Callout kind="info" collapsed="false">
+  Todos os valores tecnicos desta base foram verificados contra o codigo-fonte ABAP. Quando um valor nao pode ser confirmado, ele e marcado com aviso explicito.
 </Callout>
+
