@@ -1,0 +1,333 @@
+---
+title: "Reforma Tributaria CBS/IBS -- BAdI POST_PROCESSING"
+description: >-
+  Especificacao funcional para mapeamento TXS para Pricing das conditions CBS1, CBS2, IB1S, IB2S, IB1M, IB2M
+  via BAdI TXS_BADI_CONTROLLER metodo POST_PROCESSING.
+---
+
+<Callout kind="info" collapsed="false">
+  **Especificacao Funcional** -- Reforma Tributaria CBS/IBS. BAdI `TXS_BADI_CONTROLLER`, metodo `POST_PROCESSING`.
+  Cenario MM. Condition types: CBS1, CBS2, IB1S, IB2S, IB1M, IB2M.
+  Autor: Fabio Dezan | Data: 05/03/2026 | Status: Especificacao
+</Callout>
+
+<a href="/txs/badi/reforma-cbs-ibs.pdf" target="_blank">Baixar PDF da Especificacao Funcional</a>
+
+---
+
+## 1. Regra de Negocio
+
+Quando o Tax Engine retornar impostos da Reforma Tributaria (CBS, IBSUF ou IBSMUN), e a condition type da pricing corresponder a uma das 6 conditions em escopo, atualizar o valor, a aliquota e a base de calculo da condition com os dados retornados na response.
+
+**Escopo:** 3 impostos da reforma, cada um com 2 condition types (com credito / sem credito):
+
+| Imposto (taxTypeCode) | Com credito (taxable > 0) | Sem credito (taxable = 0) |
+|------------------------|--------------------------|--------------------------|
+| CBS | CBS1 | CBS2 |
+| IBSUF | IB1S | IB2S |
+| IBSMUN | IB1M | IB2M |
+
+**Justificativa:** O mapeamento standard do TXS para as conditions da reforma tributaria pode nao preencher corretamente os campos KBETR (aliquota), KAWRT (base) e o valor da condition. Esta implementacao garante que os 3 campos reflitam exatamente o calculo retornado pelo Tax Engine.
+
+### Diferencas em Relacao ao Spec ICMS
+
+1. **KAWRT (base de calculo) e atualizado** neste spec (no ICMS nao era)
+2. **Nao ha filtro por CST** -- a distincao entre conditions e feita pelo standard via `has_credit` (taxable > 0 = com credito, taxable = 0 = sem credito). Fonte: `cl_txs_tax_types_values_br.abap:1643-1651`
+3. Quando taxable = 0, os valores da response ainda sao preenchidos (nao zera manualmente)
+
+<Callout kind="info" collapsed="false">
+  **Fora de escopo:** Condition types CBS3, IB3S, IB3M (cenario SD -- `BUILD_SD_CBS` e `BUILD_SD_IBS` em `cl_txs_tax_types_values_br.abap:1155-1231`).
+</Callout>
+
+---
+
+## 2. Condicoes de Ativacao
+
+A regra so deve ser executada quando **TODAS** as condicoes abaixo forem verdadeiras:
+
+| # | Condicao | Campo | Op. | Valor |
+|---|----------|-------|-----|-------|
+| 1 | Pais = Brasil | `I_COUNTRIES-INTCA` | `=` | `'BR'` |
+| 2 | Condition type no escopo | `C_PRICING_CONDITION_RECORD-KSCHL` | `IN` | `'CBS1'`, `'CBS2'`, `'IB1S'`, `'IB2S'`, `'IB1M'`, `'IB2M'` |
+| 3 | Tax type na response | `taxValue.taxTypeCode` | `=` | `'CBS'` ou `'IBSUF'` ou `'IBSMUN'` |
+
+<Callout kind="info" collapsed="false">
+  **Nota:** Nao ha filtro por CST ou cClassTrib. A distincao entre condition "com credito" e "sem credito" ja foi feita pelo standard no `BUILD_MM_CBS` / `BUILD_MM_IBSUF` / `BUILD_MM_IBSMUN`. O POST\_PROCESSING apenas atualiza os valores.
+</Callout>
+
+---
+
+## 3. Parametros Utilizados
+
+### 3.1 Leitura (IMPORTING)
+
+| Parametro | Campo | Descricao |
+|-----------|-------|-----------|
+| `I_COUNTRIES` | `INTCA` | Filtrar por pais Brasil ('BR') |
+| `I_PRICING_HEADER` | `KAPPL` | Identificar aplicacao MM (TX) para construcao da chave do buffer |
+
+### 3.2 Leitura (Response do Tax Engine)
+
+| Campo JSON | Descricao |
+|------------|-----------|
+| `taxValues[].taxTypeCode` | Tipo de imposto: 'CBS', 'IBSUF' ou 'IBSMUN' |
+| `taxValues[].rate` | Aliquota (ex: 8.80) |
+| `taxValues[].taxable` | Base de calculo (ex: 110.00 ou 0.00) |
+| `taxValues[].value` | Valor do imposto (ex: 9.68) |
+
+### 3.3 Alteracao (CHANGING)
+
+| Parametro | Campo | Valor Anterior | Valor Novo | Descricao |
+|-----------|-------|----------------|------------|-----------|
+| `C_PRICING_CONDITION_VALUE` | -- | 0.00 | `taxValue.value` | Valor do imposto |
+| `C_PRICING_CONDITION_RECORD` | `KBETR` | 0.000 | `taxValue.rate * 10` | Aliquota x10 (ex: 8.80 -> 88.000) |
+| `C_PRICING_CONDITION_RECORD` | `KAWRT` | 0.00 | `taxValue.taxable` | Base de calculo |
+
+---
+
+## 4. Logica Passo a Passo
+
+1. Verificar se pais = BR (`I_COUNTRIES-INTCA = 'BR'`), senao **RETURN**
+2. Verificar se KSCHL esta no escopo (CBS1, CBS2, IB1S, IB2S, IB1M, IB2M), senao **RETURN**
+3. Determinar o taxTypeCode correspondente ao KSCHL atual:
+   - CBS1 ou CBS2 -> taxTypeCode = `'CBS'`
+   - IB1S ou IB2S -> taxTypeCode = `'IBSUF'`
+   - IB1M ou IB2M -> taxTypeCode = `'IBSMUN'`
+4. Recuperar response do Tax Engine via buffer
+5. Achatar tax\_values e mapear por tax\_type\_code
+6. Acessar a variavel correspondente ao taxTypeCode determinado no passo 3:
+   - `ls_tax_cbs` para CBS
+   - `ls_tax_ibsuf` para IBSUF
+   - `ls_tax_ibsmun` para IBSMUN
+7. Verificar se a variavel do imposto nao esta vazia (`IS NOT INITIAL`), senao **RETURN**
+8. Atualizar campos CHANGING:
+   - `C_PRICING_CONDITION_VALUE = ls_tax_xxx-value`
+   - `C_PRICING_CONDITION_RECORD-KBETR = ls_tax_xxx-rate * 10`
+   - `C_PRICING_CONDITION_RECORD-KAWRT = ls_tax_xxx-taxable`
+
+---
+
+## 5. Cenarios de Teste
+
+| # | Cenario | Dados de Entrada | Resultado Esperado |
+|---|---------|------------------|-------------------|
+| 1 | CBS tributada (com credito) | taxTypeCode=CBS, rate=8.80, taxable=110.00, value=9.68. KSCHL=CBS1 | CBS1: KBETR=88.000, KAWRT=110.00, value=9.68 |
+| 2 | CBS sem credito (taxable=0) | taxTypeCode=CBS, rate=8.80, taxable=0.00, value=0.00. KSCHL=CBS2 | CBS2: KBETR=88.000, KAWRT=0.00, value=0.00 |
+| 3 | IBSUF tributado (com credito) | taxTypeCode=IBSUF, rate=12.50, taxable=110.00, value=13.75. KSCHL=IB1S | IB1S: KBETR=125.000, KAWRT=110.00, value=13.75 |
+| 4 | IBSUF sem credito | taxTypeCode=IBSUF, rate=12.50, taxable=0.00, value=0.00. KSCHL=IB2S | IB2S: KBETR=125.000, KAWRT=0.00, value=0.00 |
+| 5 | IBSMUN tributado (com credito) | taxTypeCode=IBSMUN, rate=5.00, taxable=110.00, value=5.50. KSCHL=IB1M | IB1M: KBETR=50.000, KAWRT=110.00, value=5.50 |
+| 6 | IBSMUN sem credito | taxTypeCode=IBSMUN, rate=5.00, taxable=0.00, value=0.00. KSCHL=IB2M | IB2M: KBETR=50.000, KAWRT=0.00, value=0.00 |
+| 7 | Tax Engine nao retorna CBS | Sem taxTypeCode=CBS. KSCHL=CBS1 | CBS1 NAO atualizada (ls\_tax IS INITIAL) |
+| 8 | Pais diferente (US) | I\_COUNTRIES-INTCA='US'. KSCHL=CBS1 | CBS1 NAO atualizada (RETURN no filtro de pais) |
+| 9 | Condition fora de escopo (CBS3) | taxTypeCode=CBS, rate=8.80, value=9.68. KSCHL=CBS3 | CBS3 NAO atualizada (RETURN no filtro de KSCHL) |
+
+---
+
+## 6. Restricoes e Dependencias
+
+<Callout kind="warning" collapsed="false">
+  **Atencao:** A Reforma Tributaria brasileira esta em fase de regulamentacao. Os taxTypeCode e condition types podem mudar em futuras notas SAP.
+</Callout>
+
+- Depende do acesso a response do Tax Engine via `CL_TXS_RESPONSE_BUFFER` -- classes **NAO Released (C1)**
+- BAdI `TXS_BADI_CONTROLLER` **NAO Released** -- risco em upgrades do S/4HANA Cloud
+- Condition types CBS1, CBS2, IB1S, IB2S, IB1M, IB2M devem estar configuradas na pricing procedure com formula 279
+- A response do Tax Engine deve conter taxTypeCode 'CBS', 'IBSUF' e/ou 'IBSMUN'
+- A distincao entre condition "com credito" e "sem credito" e feita pelo standard via `has_credit` -- este POST\_PROCESSING nao valida a coerencia entre KSCHL e taxable
+- Condition types CBS3, IB3S, IB3M (cenario SD) estao **FORA de escopo**
+
+---
+
+## 7. Fontes Verificadas no Codigo
+
+| Valor Tecnico | Arquivo | Linha |
+|---------------|---------|-------|
+| CBS1, CBS2, CBS3 (condition types) | `cl_txs_tax_types_values_br.abap` | 79-81 |
+| IB1S, IB2S, IB3S (condition types) | `cl_txs_tax_types_values_br.abap` | 73-75 |
+| IB1M, IB2M, IB3M (condition types) | `cl_txs_tax_types_values_br.abap` | 76-78 |
+| taxTypeCode 'CBS' | `if_logbr_afd_mapper_constants.abap` | 50 |
+| taxTypeCode 'IBSUF' | `if_logbr_afd_mapper_constants.abap` | 49 |
+| taxTypeCode 'IBSMUN' | `if_logbr_afd_mapper_constants.abap` | 48 |
+| has\_credit (taxable > 0) | `cl_txs_tax_types_values_br.abap` | 1643-1651 |
+| BUILD\_MM\_CBS (CBS1/CBS2) | `cl_txs_tax_types_values_br.abap` | 349-362 |
+| BUILD\_MM\_IBSUF (IB1S/IB2S) | `cl_txs_tax_types_values_br.abap` | 455-468 |
+| BUILD\_MM\_IBSMUN (IB1M/IB2M) | `cl_txs_tax_types_values_br.abap` | 439-452 |
+
+---
+
+## 8. Codigo ABAP -- Metodo POST\_PROCESSING
+
+Codigo completo para implementacao em cliente novo (sem logica previa na BAdI). Organizado em 5 blocos sequenciais.
+
+### 8.1 Bloco 1 -- Filtros Iniciais
+
+Verifica se esta chamada do POST\_PROCESSING se aplica a esta regra. Se nao, sai imediatamente.
+
+```abap
+    " =================================================================
+    " BLOCO 1: Filtros Iniciais
+    " Regra: Reforma Tributaria CBS/IBS
+    " Spec: content/specifications/txs-badi/reforma-cbs-ibs.md
+    " =================================================================
+
+    " Filtro 1: Apenas Brasil
+    IF i_countries-intca <> 'BR'.
+      RETURN.
+    ENDIF.
+
+    " Filtro 2: Apenas condition types da reforma em escopo
+    CASE c_pricing_condition_record-kschl.
+      WHEN 'CBS1' OR 'CBS2' OR 'IB1S' OR 'IB2S' OR 'IB1M' OR 'IB2M'.
+        " Continua processamento
+      WHEN OTHERS.
+        RETURN.
+    ENDCASE.
+```
+
+### 8.2 Bloco 2 -- Recuperacao do Buffer
+
+Obtem a response do Tax Engine armazenada em memoria. Constroi a chave de busca a partir dos dados do documento MM (EVRTN + EVRTP).
+
+```abap
+    " =================================================================
+    " BLOCO 2: Recuperacao do Buffer de Respostas TXS
+    " =================================================================
+
+    " Instancia singleton do buffer (mesma usada pelo controller TXS)
+    DATA(lr_response_buffer) = cl_txs_response_buffer=>get_instance( ).
+
+    " Construcao da chave de busca (Reference = documento + item)
+    DATA lv_container_ref  TYPE char16.
+    DATA lv_container_doc  TYPE char16.
+    DATA lv_container_item TYPE char16.
+
+    " Cenario MM (KAPPL = TX): usa EVRTN (doc) + EVRTP (item)
+    IF i_pricing_header-kappl = 'TX'.
+      lv_container_doc  = c_pricing_item-evrtn.
+      lv_container_item = c_pricing_item-evrtp.
+
+    " Cenario SD (KAPPL = V): usa VGBEL/VGPOS ou AUBEL/AUPOS
+    ELSEIF i_pricing_header-kappl = 'V'.
+      IF c_pricing_item-vgbel IS NOT INITIAL.
+        lv_container_doc  = c_pricing_item-vgbel.
+        lv_container_item = c_pricing_item-vgpos.
+      ELSEIF c_pricing_item-aubel IS NOT INITIAL.
+        lv_container_doc  = c_pricing_item-aubel.
+        lv_container_item = c_pricing_item-aupos.
+      ENDIF.
+    ENDIF.
+
+    lv_container_ref = lv_container_doc && lv_container_item.
+
+    " Recupera o objeto de resposta do buffer
+    DATA lr_response TYPE REF TO if_txs_response.
+
+    TRY.
+        IF lv_container_doc IS NOT INITIAL.
+          lr_response = lr_response_buffer->if_txs_resp_buffer_ext_getters~get_response_by_ref(
+            i_reference = lv_container_ref ).
+        ELSE.
+          lr_response = lr_response_buffer->if_txs_resp_buffer_ext_getters~get_response_by_id(
+            i_id = c_pricing_condition_record-kposn ).
+        ENDIF.
+      CATCH cx_txs_response_not_on_buffer.
+        RETURN.
+    ENDTRY.
+```
+
+### 8.3 Bloco 3 -- Deserializacao JSON
+
+Converte o JSON bruto da response em uma estrutura ABAP tipada (TXS\_RESPONSE).
+
+```abap
+    " =================================================================
+    " BLOCO 3: Deserializacao do JSON para Estrutura ABAP
+    " Resultado: wa_response (tipo TXS_RESPONSE) com toda a response
+    " =================================================================
+
+    DATA(lv_response_json) = lr_response->get_response_json( ).
+
+    DATA wa_response TYPE txs_response.
+
+    TRY.
+        DATA(json_tool)   = cl_txs_json_serializer=>get_instance( ).
+        DATA(json_string) = json_tool->rename_properties_to_field( lv_response_json ).
+
+        json_tool->deserialize(
+          EXPORTING json        = json_string
+                    pretty_name = json_tool->pretty_mode-camel_case
+          CHANGING  data        = wa_response ).
+      CATCH cx_sy_move_cast_error.
+        RETURN.
+    ENDTRY.
+```
+
+### 8.4 Bloco 4 -- Achatamento e Mapeamento por Tax Type Code
+
+Achata todos os tax\_values das tax\_lines em uma tabela flat. Mapeia cada imposto da reforma para uma variavel local.
+
+```abap
+    " =================================================================
+    " BLOCO 4: Achatamento de tax_values + Mapeamento por tax_type_code
+    " =================================================================
+
+    " Achata tax_values de todas as tax_lines em tabela flat
+    DATA lt_tax_values TYPE txs_tax_value_tty.
+    LOOP AT wa_response-tax_lines ASSIGNING FIELD-SYMBOL(<ls_tax_line>).
+      APPEND LINES OF <ls_tax_line>-tax_values TO lt_tax_values.
+    ENDLOOP.
+
+    " Mapeamento direto -- cada variavel recebe o imposto correspondente
+    " Se o imposto nao existir na response, a variavel fica vazia (OPTIONAL)
+    DATA(ls_tax_cbs)    = VALUE #( lt_tax_values[ tax_type_code = 'CBS' ] OPTIONAL ).
+    DATA(ls_tax_ibsuf)  = VALUE #( lt_tax_values[ tax_type_code = 'IBSUF' ] OPTIONAL ).
+    DATA(ls_tax_ibsmun) = VALUE #( lt_tax_values[ tax_type_code = 'IBSMUN' ] OPTIONAL ).
+```
+
+### 8.5 Bloco 5 -- Regra de Negocio (Atualizacao da Condition)
+
+Determina qual imposto corresponde ao KSCHL atual, **valida se o taxable e coerente com a condition type** (tipo 1 = taxable > 0, tipo 2 = taxable = 0), e atualiza os 3 campos da pricing: valor (`C_PRICING_CONDITION_VALUE`), aliquota (`KBETR`) e base (`KAWRT`).
+
+```abap
+    " =================================================================
+    " BLOCO 5: Regra de Negocio -- Atualizacao da Condition
+    " Mapeamento: KSCHL -> taxTypeCode -> campos da pricing
+    " Validacao: condition tipo 1 (taxable > 0) / tipo 2 (taxable = 0)
+    " =================================================================
+
+    " Seleciona o imposto correto baseado no KSCHL + valida taxable
+    " Tipo 1 (CBS1, IB1S, IB1M): so atualiza se taxable > 0 (com credito)
+    " Tipo 2 (CBS2, IB2S, IB2M): so atualiza se taxable <= 0 (sem credito)
+    DATA ls_tax TYPE txs_tax_value.
+
+    IF c_pricing_condition_record-kschl = 'CBS1' AND ls_tax_cbs-taxable > 0.
+      ls_tax = ls_tax_cbs.
+    ELSEIF c_pricing_condition_record-kschl = 'CBS2' AND ls_tax_cbs-taxable <= 0.
+      ls_tax = ls_tax_cbs.
+    ELSEIF c_pricing_condition_record-kschl = 'IB1S' AND ls_tax_ibsuf-taxable > 0.
+      ls_tax = ls_tax_ibsuf.
+    ELSEIF c_pricing_condition_record-kschl = 'IB2S' AND ls_tax_ibsuf-taxable <= 0.
+      ls_tax = ls_tax_ibsuf.
+    ELSEIF c_pricing_condition_record-kschl = 'IB1M' AND ls_tax_ibsmun-taxable > 0.
+      ls_tax = ls_tax_ibsmun.
+    ELSEIF c_pricing_condition_record-kschl = 'IB2M' AND ls_tax_ibsmun-taxable <= 0.
+      ls_tax = ls_tax_ibsmun.
+    ENDIF.
+
+    " Atualiza os campos da pricing condition com dados do Tax Engine
+    IF ls_tax IS NOT INITIAL.
+      c_pricing_condition_value        = ls_tax-value.      " Valor do imposto (ex: 9.68)
+      c_pricing_condition_record-kbetr = ls_tax-rate * 10.  " Aliquota x10 (ex: 8.80 -> 88.000)
+      c_pricing_condition_record-kawrt = ls_tax-taxable.     " Base de calculo (ex: 110.00)
+    ENDIF.
+```
+
+### Resumo dos Blocos
+
+| Bloco | O que faz | Sai se... |
+|-------|-----------|-----------|
+| 1 | Filtros iniciais (pais + KSCHL) | Pais \<\> BR ou KSCHL fora do escopo |
+| 2 | Recupera response do buffer TXS | Response nao encontrada no buffer |
+| 3 | Deserializa JSON -> estrutura ABAP | Erro de deserializacao |
+| 4 | Achata tax\_values e mapeia por imposto | -- |
+| 5 | Atualiza valor, aliquota e base | Imposto nao na response OU taxable incompativel com KSCHL |

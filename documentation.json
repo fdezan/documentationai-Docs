@@ -30,6 +30,13 @@
               { "title": "Item Classifications", "path": "txs/payload/item-classifications" },
               { "title": "Additional Item Info", "path": "txs/payload/additional-item-info" }
             ]
+          },
+          {
+            "group": "BAdI Specifications",
+            "icon": "file-code",
+            "pages": [
+              { "title": "Reforma CBS/IBS", "path": "txs/badi/reforma-cbs-ibs" }
+            ]
           }
         ]
       }
