@@ -1,8 +1,12 @@
 {
   "name": "LOCBR Knowledge Base",
   "colors": {
-    "light": { "brand": "#0070F2" },
-    "dark": { "brand": "#4DB8FF" }
+    "light": {
+      "brand": "#0070F2"
+    },
+    "dark": {
+      "brand": "#4DB8FF"
+    }
   },
   "navigation": {
     "tabs": [
@@ -14,7 +18,11 @@
             "group": "Bem-vindo",
             "icon": "book-open",
             "pages": [
-              { "title": "Introducao", "path": "introduction", "icon": "home" }
+              {
+                "title": "Introducao",
+                "path": "introduction",
+                "icon": "home"
+              }
             ]
           }
         ]
@@ -27,19 +35,29 @@
             "group": "Payload Reference",
             "icon": "file-text",
             "pages": [
-              { "title": "Item Classifications", "path": "txs/payload/item-classifications" },
-              { "title": "Additional Item Info", "path": "txs/payload/additional-item-info" }
+              {
+                "title": "Item Classifications",
+                "path": "txs/payload/item-classifications"
+              },
+              {
+                "title": "Additional Item Info",
+                "path": "txs/payload/additional-item-info"
+              }
             ]
           },
           {
             "group": "BAdI Specifications",
             "icon": "file-code",
             "pages": [
-              { "title": "Reforma CBS/IBS", "path": "txs/badi/reforma-cbs-ibs" }
+              {
+                "title": "Reforma CBS/IBS",
+                "path": "txs/badi/reforma-cbs-ibs"
+              }
             ]
           }
         ]
       }
     ]
-  }
+  },
+  "title": "Fidaro Docs"
 }
